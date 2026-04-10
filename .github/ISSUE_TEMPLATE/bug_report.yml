@@ -1,0 +1,69 @@
+name: Bug Report
+description: Report a bug in tkr
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. Please fill out the details below so we can reproduce the issue quickly.
+
+  - type: input
+    id: version
+    attributes:
+      label: tkr version
+      description: Output of `tkr --version`
+      placeholder: "v1.8.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - macOS (Intel)
+        - macOS (Apple Silicon)
+        - Linux (amd64)
+        - Linux (arm64)
+        - Windows (amd64)
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: install-method
+    attributes:
+      label: Install method
+      description: How did you install tkr?
+      placeholder: "curl installer / go install / manual download / built from source"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected to happen instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps to reproduce the issue. Include the exact `tkr` command you ran.
+      placeholder: |
+        1. Run `tkr git status` in a repo with ...
+        2. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Actual output
+      description: Paste the output you got (use code blocks). Trim sensitive info.
+      render: shell
+    validations:
+      required: false
