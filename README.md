@@ -106,3 +106,9 @@ tkr verify             # run built-in filter tests (141 checks)
 - **Linux**: x86_64, glibc 2.17+
 - **Windows**: 10+ with [Git Bash](https://git-scm.com/downloads) (included with Git for Windows)
 - No runtime dependencies — tkr is a single static binary
+
+## Support
+
+Found a bug or have a feature request? [Open an issue](https://github.com/bpeers01/tkr-releases/issues/new/choose) — pick the bug report or feature request template.
+
+This is a binary distribution repo. The source code is maintained privately; this repo hosts releases, the install script, and the issue tracker.
