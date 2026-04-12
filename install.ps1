@@ -160,13 +160,12 @@ try {
         $PluginDir = Join-Path $env:LOCALAPPDATA "tkr\plugin"
     }
 
-    # Detect if running from a repo clone
+    # Detect if running from a local repo clone (.\install.ps1).
+    # When piped via irm|iex, $MyInvocation path won't point to a repo.
     $ScriptSource = ""
     $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
-    if (Test-Path (Join-Path $ScriptDir ".claude-plugin\plugin.json")) {
+    if ($ScriptDir -and (Test-Path (Join-Path $ScriptDir ".claude-plugin\plugin.json"))) {
         $ScriptSource = $ScriptDir
-    } elseif (Test-Path ".claude-plugin\plugin.json") {
-        $ScriptSource = (Get-Location).Path
     }
 
     if ($ScriptSource) {
