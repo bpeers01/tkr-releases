@@ -322,12 +322,17 @@ fi
 echo "Registering plugin with Claude Code..."
 
 if command -v claude >/dev/null 2>&1; then
-  # Attempt native plugin install
-  if claude plugin install "$PLUGIN_DIR" 2>/dev/null; then
-    echo "Plugin registered via 'claude plugin install'."
-  else
-    echo "Note: 'claude plugin install' failed — falling back to manual hook wiring." >&2
-    # Manual hook wiring fallback
+  # Register as a marketplace, then install the plugin from it.
+  # Claude Code uses marketplaces (plugin directories), not direct path installs.
+  REGISTERED=false
+  if claude plugin marketplace add "$PLUGIN_DIR" 2>/dev/null; then
+    if claude plugin install tkr 2>/dev/null; then
+      echo "Plugin registered: tkr@tkr (marketplace + install)."
+      REGISTERED=true
+    fi
+  fi
+  if [ "$REGISTERED" = "false" ]; then
+    echo "Note: marketplace registration failed — falling back to manual hook wiring." >&2
     install_hooks_manually "$PLUGIN_DIR"
   fi
 else
