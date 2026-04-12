@@ -259,6 +259,79 @@ install_hooks_manually() {
   echo '  }'
 }
 
+# Clean up legacy hook files and settings.json entries left by pre-plugin installs
+# (tkr init -g, install_hooks_manually). Only called after successful marketplace
+# registration so the plugin's own hooks are already wired.
+cleanup_legacy_hooks() {
+  local claude_hooks_dir="$HOME/.claude/hooks"
+  local settings_file="$HOME/.claude/settings.json"
+  local cleaned=false
+
+  # 1. Remove legacy hook files copied by install_hooks_manually or tkr init -g
+  for f in tkr-rewrite.sh session-start.js user-prompt-submit.js statusline.sh statusline.ps1; do
+    if [ -f "$claude_hooks_dir/$f" ]; then
+      rm "$claude_hooks_dir/$f"
+      echo "  Removed legacy hook file: ${f}"
+      cleaned=true
+    fi
+  done
+
+  # 2 & 3. Patch settings.json (requires jq)
+  if [ ! -f "$settings_file" ]; then
+    [ "$cleaned" = "true" ] && echo "Legacy hook cleanup complete."
+    return
+  fi
+
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "  Note: jq not installed — skipping settings.json cleanup."
+    echo "    Remove tkr-rewrite entries from ${settings_file} manually if needed."
+    [ "$cleaned" = "true" ] && echo "Legacy hook cleanup complete."
+    return
+  fi
+
+  # 2 & 3. Strip tkr-rewrite PreToolUse hooks + set the plugin statusLine.
+  #    Applied as a single atomic jq write to avoid partial-update risk.
+  #    Two hook formats exist in the wild:
+  #      flat:    {"type":"command","command":"bash .../tkr-rewrite.sh"}
+  #      matcher: {"matcher":"Bash","hooks":[{"type":"command","command":"bash .../tkr-rewrite.sh"}]}
+  local statusline_cmd="bash ${PLUGIN_DIR}/hooks/statusline.sh"
+  local needs_rewrite=false needs_statusline=false
+
+  has_tkr_rewrite='(.hooks.PreToolUse // []) | any(
+    ((.command // "") | test("tkr-rewrite")) or
+    ((.hooks // []) | any((.command // "") | test("tkr-rewrite")))
+  )'
+  needs_statusline_update='(.statusLine // "") | (. == "" or test("shadowlane"))'
+
+  jq -e "$has_tkr_rewrite" "$settings_file" >/dev/null 2>&1 && needs_rewrite=true
+  jq -e "$needs_statusline_update" "$settings_file" >/dev/null 2>&1 && needs_statusline=true
+
+  if [ "$needs_rewrite" = "true" ] || [ "$needs_statusline" = "true" ]; then
+    jq --arg cmd "$statusline_cmd" '
+      (if .hooks.PreToolUse then
+        .hooks.PreToolUse |= map(select(
+          (((.command // "") | test("tkr-rewrite")) or
+           ((.hooks // []) | any((.command // "") | test("tkr-rewrite")))) | not
+        ))
+      else . end)
+      |
+      (if (.statusLine // "") | (. == "" or test("shadowlane")) then
+        .statusLine = $cmd
+      else . end)
+    ' "$settings_file" > "${settings_file}.tmp" && mv "${settings_file}.tmp" "$settings_file"
+
+    if [ "$needs_rewrite" = "true" ]; then
+      echo "  Removed legacy tkr-rewrite PreToolUse hook from settings.json"
+    fi
+    if [ "$needs_statusline" = "true" ]; then
+      echo "  Set tkr statusLine in settings.json"
+    fi
+    cleaned=true
+  fi
+
+  [ "$cleaned" = "true" ] && echo "Legacy hook cleanup complete."
+}
+
 echo ""
 echo "Installing plugin components..."
 
@@ -329,6 +402,8 @@ if command -v claude >/dev/null 2>&1; then
     if claude plugin install tkr 2>/dev/null; then
       echo "Plugin registered: tkr@tkr (marketplace + install)."
       REGISTERED=true
+      echo "Cleaning up legacy hooks..."
+      cleanup_legacy_hooks
     fi
   fi
   if [ "$REGISTERED" = "false" ]; then
