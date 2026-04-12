@@ -209,11 +209,12 @@ try {
     $Registered = $false
     if (Get-Command claude -ErrorAction SilentlyContinue) {
         try {
-            claude plugin install $PluginDir 2>$null
-            Write-Host "Plugin registered via 'claude plugin install'."
+            claude plugin marketplace add $PluginDir 2>$null
+            claude plugin install tkr 2>$null
+            Write-Host "Plugin registered: tkr@tkr (marketplace + install)."
             $Registered = $true
         } catch {
-            Write-Host "Note: 'claude plugin install' failed - falling back to manual hook wiring." -ForegroundColor Yellow
+            Write-Host "Note: marketplace registration failed - falling back to manual hook wiring." -ForegroundColor Yellow
         }
     }
 
