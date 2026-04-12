@@ -1,0 +1,268 @@
+#Requires -Version 5.1
+<#
+.SYNOPSIS
+    tkr installer for Windows — downloads the latest release binary from GitHub.
+
+.DESCRIPTION
+    Supports two modes:
+      -Cli     CLI-only: installs the tkr binary to PATH (default)
+      -Plugin  Full plugin: binary + hooks + skills + scripts + adapters for Claude Code
+
+    Auto-detection: if neither flag is given, checks whether Claude Code is
+    installed. If found, uses plugin mode; otherwise installs CLI-only.
+
+.PARAMETER Cli
+    Install CLI binary only (no plugin components).
+
+.PARAMETER Plugin
+    Install full Claude Code plugin (binary + hooks + skills + scripts + adapters).
+
+.PARAMETER Version
+    Pin a specific version tag (e.g., "v1.12.1"). Default: latest release.
+
+.PARAMETER InstallDir
+    Override binary install directory. Default: $env:LOCALAPPDATA\tkr\bin
+
+.PARAMETER PluginDir
+    Override plugin install directory. Default: $env:LOCALAPPDATA\tkr\plugin
+
+.EXAMPLE
+    irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex
+    .\install.ps1 -Plugin
+    .\install.ps1 -Cli -Version v1.12.1
+#>
+
+param(
+    [switch]$Cli,
+    [switch]$Plugin,
+    [string]$Version = $env:TKR_VERSION,
+    [string]$InstallDir = $env:TKR_INSTALL_DIR,
+    [string]$PluginDir = $env:TKR_PLUGIN_DIR
+)
+
+$ErrorActionPreference = "Stop"
+
+$Repo = "bpeers01/tkr-releases"
+$SourceRepo = "bpeers01/tkr"
+
+# --- Detect mode ---
+
+$Mode = ""
+if ($Cli) { $Mode = "cli" }
+if ($Plugin) { $Mode = "plugin" }
+
+if (-not $Mode) {
+    if (Get-Command claude -ErrorAction SilentlyContinue) {
+        Write-Host "Claude Code detected. Installing in plugin mode (-Cli to skip)."
+        $Mode = "plugin"
+    } else {
+        $Mode = "cli"
+    }
+}
+
+Write-Host "Install mode: $Mode"
+
+# --- Detect architecture ---
+
+$Arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+if ($Arch -ne [System.Runtime.InteropServices.Architecture]::X64) {
+    Write-Error "Windows builds are only available for x64 (detected: $Arch)"
+    exit 1
+}
+
+$Artifact = "tkr-windows-amd64.exe"
+
+# --- Resolve version ---
+
+if (-not $Version) {
+    Write-Host "Fetching latest release..."
+    $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest"
+    $Tag = $Release.tag_name
+    if (-not $Tag) {
+        Write-Error "Could not determine latest release"
+        exit 1
+    }
+} else {
+    $Tag = $Version
+}
+
+Write-Host "Installing tkr $Tag (windows/amd64)..."
+
+# --- Download ---
+
+$BaseUrl = "https://github.com/$Repo/releases/download/$Tag"
+$TempDir = Join-Path $env:TEMP "tkr-install-$(Get-Random)"
+New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
+
+try {
+    $ArtifactPath = Join-Path $TempDir $Artifact
+    $ChecksumPath = Join-Path $TempDir "checksums.sha256"
+
+    Write-Host "Downloading $Artifact..."
+    Invoke-WebRequest -Uri "$BaseUrl/$Artifact" -OutFile $ArtifactPath -UseBasicParsing
+    Invoke-WebRequest -Uri "$BaseUrl/checksums.sha256" -OutFile $ChecksumPath -UseBasicParsing
+
+    # --- Verify SHA256 checksum ---
+
+    $ExpectedLine = Get-Content $ChecksumPath | Where-Object { $_ -match $Artifact }
+    if (-not $ExpectedLine) {
+        Write-Error "No checksum found for $Artifact in checksums.sha256"
+        exit 1
+    }
+    $Expected = ($ExpectedLine -split '\s+')[0]
+
+    $ActualHash = (Get-FileHash -Path $ArtifactPath -Algorithm SHA256).Hash.ToLower()
+    if ($ActualHash -ne $Expected) {
+        Write-Error "Checksum mismatch`n  expected: $Expected`n  got:      $ActualHash"
+        exit 1
+    }
+    Write-Host "Checksum verified."
+
+    # --- Install binary ---
+
+    if (-not $InstallDir) {
+        $InstallDir = Join-Path $env:LOCALAPPDATA "tkr\bin"
+    }
+    New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+
+    $Dest = Join-Path $InstallDir "tkr.exe"
+    Move-Item -Path $ArtifactPath -Destination $Dest -Force
+    Write-Host "Installed tkr to $Dest"
+
+    # --- PATH check ---
+
+    $UserPath = [System.Environment]::GetEnvironmentVariable("PATH", "User")
+    if ($UserPath -notlike "*$InstallDir*") {
+        Write-Host ""
+        Write-Host "Adding $InstallDir to user PATH..."
+        [System.Environment]::SetEnvironmentVariable("PATH", "$InstallDir;$UserPath", "User")
+        $env:PATH = "$InstallDir;$env:PATH"
+        Write-Host "PATH updated. Restart your terminal for changes to take effect."
+    }
+
+    # --- CLI-only: done ---
+
+    if ($Mode -eq "cli") {
+        Write-Host ""
+        Write-Host "Set up Claude Code integration:"
+        Write-Host "  tkr init -g"
+        exit 0
+    }
+
+    # ======================================================================
+    # Plugin mode: install hooks, skills, scripts, adapters for Claude Code
+    # ======================================================================
+
+    Write-Host ""
+    Write-Host "Installing plugin components..."
+
+    if (-not $PluginDir) {
+        $PluginDir = Join-Path $env:LOCALAPPDATA "tkr\plugin"
+    }
+
+    # Detect if running from a repo clone
+    $ScriptSource = ""
+    $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+    if (Test-Path (Join-Path $ScriptDir ".claude-plugin\plugin.json")) {
+        $ScriptSource = $ScriptDir
+    } elseif (Test-Path ".claude-plugin\plugin.json") {
+        $ScriptSource = (Get-Location).Path
+    }
+
+    if ($ScriptSource) {
+        Write-Host "Source: local clone at $ScriptSource"
+        $PluginDir = $ScriptSource
+    } else {
+        # Download plugin bundle from release
+        $BundleUrl = "$BaseUrl/tkr-plugin.tar.gz"
+        $BundlePath = Join-Path $TempDir "tkr-plugin.tar.gz"
+
+        Write-Host "Downloading plugin bundle..."
+        try {
+            Invoke-WebRequest -Uri $BundleUrl -OutFile $BundlePath -UseBasicParsing
+        } catch {
+            Write-Error "Failed to download plugin bundle from $BundleUrl`nThe plugin bundle may not be available for this release.`nUse -Cli for binary-only install, or clone the repo and run .\install.ps1 -Plugin"
+            exit 1
+        }
+
+        # Verify plugin bundle checksum
+        $BundleExpectedLine = Get-Content $ChecksumPath | Where-Object { $_ -match "tkr-plugin.tar.gz" }
+        if ($BundleExpectedLine) {
+            $BundleExpected = ($BundleExpectedLine -split '\s+')[0]
+            $BundleActual = (Get-FileHash -Path $BundlePath -Algorithm SHA256).Hash.ToLower()
+            if ($BundleActual -ne $BundleExpected) {
+                Write-Error "Plugin bundle checksum mismatch`n  expected: $BundleExpected`n  got:      $BundleActual"
+                exit 1
+            }
+            Write-Host "Plugin bundle checksum verified."
+        }
+
+        # Extract to plugin dir
+        New-Item -ItemType Directory -Path $PluginDir -Force | Out-Null
+        tar xzf $BundlePath -C $PluginDir
+        Write-Host "Plugin files extracted to $PluginDir"
+    }
+
+    # --- Register with Claude Code ---
+
+    Write-Host "Registering plugin with Claude Code..."
+
+    $Registered = $false
+    if (Get-Command claude -ErrorAction SilentlyContinue) {
+        try {
+            claude plugin install $PluginDir 2>$null
+            Write-Host "Plugin registered via 'claude plugin install'."
+            $Registered = $true
+        } catch {
+            Write-Host "Note: 'claude plugin install' failed - falling back to manual hook wiring." -ForegroundColor Yellow
+        }
+    }
+
+    if (-not $Registered) {
+        $ClaudeHooksDir = Join-Path $env:USERPROFILE ".claude\hooks"
+        New-Item -ItemType Directory -Path $ClaudeHooksDir -Force | Out-Null
+
+        # Copy hook scripts
+        Get-ChildItem (Join-Path $PluginDir "hooks") -File | ForEach-Object {
+            Copy-Item $_.FullName -Destination $ClaudeHooksDir -Force
+        }
+        Write-Host "Hooks copied to $ClaudeHooksDir"
+
+        $SettingsFile = Join-Path $env:USERPROFILE ".claude\settings.json"
+        Write-Host ""
+        Write-Host "To complete setup, add hooks to $SettingsFile :"
+        Write-Host '  "hooks": {'
+        Write-Host "    `"PreToolUse`": [{ `"type`": `"command`", `"command`": `"bash $ClaudeHooksDir/tkr-rewrite.sh`" }],"
+        Write-Host "    `"SessionStart`": [{ `"type`": `"command`", `"command`": `"node $ClaudeHooksDir/session-start.js`" }],"
+        Write-Host "    `"UserPromptSubmit`": [{ `"type`": `"command`", `"command`": `"node $ClaudeHooksDir/user-prompt-submit.js`" }]"
+        Write-Host '  }'
+    }
+
+    # --- Create runtime state directory ---
+
+    $TkrStateDir = Join-Path $env:USERPROFILE ".tkr"
+    New-Item -ItemType Directory -Path $TkrStateDir -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $TkrStateDir "contracts") -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $TkrStateDir "delegations") -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $TkrStateDir "validation") -Force | Out-Null
+    Write-Host "Runtime state directory: $TkrStateDir"
+
+    # --- Done ---
+
+    Write-Host ""
+    Write-Host "tkr plugin installed successfully."
+    Write-Host "  Binary:  $Dest"
+    Write-Host "  Plugin:  $PluginDir"
+    Write-Host "  State:   $TkrStateDir"
+    Write-Host ""
+    Write-Host "Available skills: /tkr-search, /tkr-delegate, /tkr-brevity, /tkr-compress, /tkr-status, /tkr-config"
+    Write-Host ""
+    Write-Host "Set up shell hook (optional, for terminal use):"
+    Write-Host "  tkr init -g"
+
+} finally {
+    # Cleanup temp dir
+    if (Test-Path $TempDir) {
+        Remove-Item -Path $TempDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
