@@ -213,6 +213,68 @@ try {
             claude plugin install tkr 2>$null
             Write-Host "Plugin registered: tkr@tkr (marketplace + install)."
             $Registered = $true
+
+            # INST-001: clean up legacy hook files and settings.json entries left by
+            # pre-plugin installs (tkr init -g, manual fallback). Only runs after
+            # successful marketplace registration; idempotent if artifacts are absent.
+            Write-Host "Cleaning up legacy hooks..."
+            $ClaudeHooksDir = Join-Path $env:USERPROFILE ".claude\hooks"
+            $LegacyFiles = @("tkr-rewrite.sh", "session-start.js", "user-prompt-submit.js", "statusline.sh", "statusline.ps1")
+            foreach ($LegacyFile in $LegacyFiles) {
+                $LegacyPath = Join-Path $ClaudeHooksDir $LegacyFile
+                if (Test-Path $LegacyPath) {
+                    Remove-Item $LegacyPath -Force
+                    Write-Host "  Removed legacy hook file: $LegacyFile"
+                }
+            }
+
+            $SettingsFile = Join-Path $env:USERPROFILE ".claude\settings.json"
+            if (Test-Path $SettingsFile) {
+                try {
+                    $Settings = Get-Content $SettingsFile -Raw | ConvertFrom-Json
+                    $SettingsChanged = $false
+
+                    # Remove tkr-rewrite PreToolUse hooks (added by tkr init -g / manual install).
+                    # Two formats exist: flat (.command at top) and matcher (.hooks[].command nested).
+                    if ($Settings.hooks -and $Settings.hooks.PreToolUse) {
+                        $Before = @($Settings.hooks.PreToolUse).Count
+                        $Settings.hooks.PreToolUse = @($Settings.hooks.PreToolUse | Where-Object {
+                            $entry = $_
+                            $isTkr = $false
+                            # Flat format: {"type":"command","command":"...tkr-rewrite..."}
+                            if ($entry.command -match "tkr-rewrite") { $isTkr = $true }
+                            # Matcher format: {"matcher":"...","hooks":[{"command":"...tkr-rewrite..."}]}
+                            if ($entry.hooks) {
+                                foreach ($h in @($entry.hooks)) {
+                                    if ($h.command -match "tkr-rewrite") { $isTkr = $true }
+                                }
+                            }
+                            -not $isTkr
+                        })
+                        if (@($Settings.hooks.PreToolUse).Count -lt $Before) {
+                            Write-Host "  Removed legacy tkr-rewrite PreToolUse hook from settings.json"
+                            $SettingsChanged = $true
+                        }
+                    }
+
+                    # Replace old Shadowlane statusLine with the plugin's own statusline,
+                    # or add it if absent — so the badge activates automatically on plugin install.
+                    $PluginStatusLineCmd = "bash $($PluginDir -replace '\\', '/')/hooks/statusline.sh"
+                    $CurrentSL = if ($Settings.PSObject.Properties.Name -contains "statusLine") { $Settings.statusLine } else { "" }
+                    if ($CurrentSL -eq "" -or $CurrentSL -match "shadowlane") {
+                        $Settings | Add-Member -NotePropertyName "statusLine" -NotePropertyValue $PluginStatusLineCmd -Force
+                        Write-Host "  Set tkr statusLine in settings.json"
+                        $SettingsChanged = $true
+                    }
+
+                    if ($SettingsChanged) {
+                        $Settings | ConvertTo-Json -Depth 10 | Set-Content $SettingsFile -Encoding UTF8
+                        Write-Host "Legacy settings cleanup complete."
+                    }
+                } catch {
+                    Write-Host "  Note: could not parse settings.json — skipping legacy settings cleanup." -ForegroundColor Yellow
+                }
+            }
         } catch {
             Write-Host "Note: marketplace registration failed - falling back to manual hook wiring." -ForegroundColor Yellow
         }
