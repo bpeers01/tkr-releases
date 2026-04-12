@@ -265,11 +265,18 @@ echo "Installing plugin components..."
 PLUGIN_DIR="${TKR_PLUGIN_DIR:-$HOME/.local/share/tkr}"
 
 # If running from a local repo clone (./install.sh), use it directly.
-# When piped via curl, $0 is "sh" or "/dev/stdin" — dirname won't match.
+# When piped via curl, $0 is "sh"/"bash"/"/dev/stdin" — skip detection.
 SCRIPT_SOURCE=""
-if [ -f "$(dirname "$0")/.claude-plugin/plugin.json" ] 2>/dev/null; then
-  SCRIPT_SOURCE="$(cd "$(dirname "$0")" && pwd)"
-fi
+case "$0" in
+  sh|bash|zsh|dash|*/sh|*/bash|*/zsh|*/dash|/dev/stdin|-)
+    # Piped execution — no local clone possible
+    ;;
+  *)
+    if [ -f "$(dirname "$0")/.claude-plugin/plugin.json" ] 2>/dev/null; then
+      SCRIPT_SOURCE="$(cd "$(dirname "$0")" && pwd)"
+    fi
+    ;;
+esac
 
 if [ -n "$SCRIPT_SOURCE" ]; then
   # Running from repo clone — use it directly as plugin root
