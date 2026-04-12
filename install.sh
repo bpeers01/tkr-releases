@@ -264,11 +264,10 @@ echo "Installing plugin components..."
 
 PLUGIN_DIR="${TKR_PLUGIN_DIR:-$HOME/.local/share/tkr}"
 
-# If running from a git clone that has the plugin manifest, use it directly
+# If running from a local repo clone (./install.sh), use it directly.
+# When piped via curl, $0 is "sh" or "/dev/stdin" — dirname won't match.
 SCRIPT_SOURCE=""
-if [ -f ".claude-plugin/plugin.json" ]; then
-  SCRIPT_SOURCE="$(pwd)"
-elif [ -f "$(dirname "$0")/.claude-plugin/plugin.json" ] 2>/dev/null; then
+if [ -f "$(dirname "$0")/.claude-plugin/plugin.json" ] 2>/dev/null; then
   SCRIPT_SOURCE="$(cd "$(dirname "$0")" && pwd)"
 fi
 
