@@ -294,7 +294,7 @@ else
   fi
 
   # Verify plugin bundle checksum (already in checksums.sha256)
-  BUNDLE_EXPECTED=$(grep -F "tkr-plugin.tar.gz" "${WORK_DIR}/checksums.sha256" | awk '{print $1}')
+  BUNDLE_EXPECTED=$(grep -F "tkr-plugin.tar.gz" "${WORK_DIR}/checksums.sha256" | head -1 | awk '{print $1}')
   if [ -n "$BUNDLE_EXPECTED" ]; then
     if command -v sha256sum >/dev/null 2>&1; then
       BUNDLE_ACTUAL=$(sha256sum "${WORK_DIR}/tkr-plugin.tar.gz" | awk '{print $1}')
