@@ -301,13 +301,20 @@ cleanup_legacy_hooks() {
     ((.command // "") | test("tkr-rewrite")) or
     ((.hooks // []) | any((.command // "") | test("tkr-rewrite")))
   )'
-  needs_statusline_update='(.statusLine // "") | (. == "" or test("shadowlane"))'
+  # Bug fix (INST-004): type-safe guard — .statusLine may be an object, not a string.
+  # Bare test("shadowlane") crashes jq when the value is an object.
+  needs_statusline_update='
+    .statusLine as $s |
+    ($s == null) or ($s == "") or
+    ($s | type == "string" and test("shadowlane")) or
+    ($s | type == "object" and ((.command // "") | test("shadowlane")))
+  '
 
   jq -e "$has_tkr_rewrite" "$settings_file" >/dev/null 2>&1 && needs_rewrite=true
   jq -e "$needs_statusline_update" "$settings_file" >/dev/null 2>&1 && needs_statusline=true
 
   if [ "$needs_rewrite" = "true" ] || [ "$needs_statusline" = "true" ]; then
-    jq --arg cmd "$statusline_cmd" '
+    if jq --arg cmd "$statusline_cmd" '
       (if .hooks.PreToolUse then
         .hooks.PreToolUse |= map(select(
           (((.command // "") | test("tkr-rewrite")) or
@@ -315,18 +322,22 @@ cleanup_legacy_hooks() {
         ))
       else . end)
       |
-      (if (.statusLine // "") | (. == "" or test("shadowlane")) then
+      (if (.statusLine | (. == null or . == "" or
+           (type == "string" and test("shadowlane")) or
+           (type == "object" and ((.command // "") | test("shadowlane"))))) then
         .statusLine = $cmd
       else . end)
-    ' "$settings_file" > "${settings_file}.tmp" && mv "${settings_file}.tmp" "$settings_file"
-
-    if [ "$needs_rewrite" = "true" ]; then
-      echo "  Removed legacy tkr-rewrite PreToolUse hook from settings.json"
+    ' "$settings_file" > "${settings_file}.tmp" && mv "${settings_file}.tmp" "$settings_file"; then
+      if [ "$needs_rewrite" = "true" ]; then
+        echo "  Removed legacy tkr-rewrite PreToolUse hook from settings.json"
+      fi
+      if [ "$needs_statusline" = "true" ]; then
+        echo "  Set tkr statusLine in settings.json"
+      fi
+      cleaned=true
+    else
+      echo "  Warning: failed to update settings.json — check jq is installed and file is valid JSON."
     fi
-    if [ "$needs_statusline" = "true" ]; then
-      echo "  Set tkr statusLine in settings.json"
-    fi
-    cleaned=true
   fi
 
   [ "$cleaned" = "true" ] && echo "Legacy hook cleanup complete."
