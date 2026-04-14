@@ -124,7 +124,7 @@ When installed as a plugin (`--plugin`), tkr provides four token-reduction capab
 | Capability | What it does |
 |-----------|-------------|
 | **Tool output compression** | Automatic filtering of all command output via hooks |
-| **Semantic search** | BM25 search across project code, docs, and diagrams (`tkr search "query"`) |
+| **Semantic search** | BM25 search across project code, docs, and diagrams (`tkr search "query"`); `--read` for inline file content, `--callers`/`--callees` for graph queries |
 | **Capacity-aware delegation** | Route tasks to Codex or Gemini CLI when approaching rate limits |
 | **Output brevity** | Terse model prose with adjustable intensity (lite/full/ultra) |
 
