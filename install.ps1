@@ -294,7 +294,7 @@ try {
         Write-Host ""
         Write-Host "To complete setup, add hooks to $SettingsFile :"
         Write-Host '  "hooks": {'
-        Write-Host "    `"PreToolUse`": [{ `"type`": `"command`", `"command`": `"bash $ClaudeHooksDir/tkr-rewrite.sh`" }],"
+        Write-Host "    `"PreToolUse`": [{ `"type`": `"command`", `"command`": `"node $ClaudeHooksDir/tkr-rewrite.js`" }],"
         Write-Host "    `"SessionStart`": [{ `"type`": `"command`", `"command`": `"node $ClaudeHooksDir/session-start.js`" }],"
         Write-Host "    `"UserPromptSubmit`": [{ `"type`": `"command`", `"command`": `"node $ClaudeHooksDir/user-prompt-submit.js`" }]"
         Write-Host '  }'
