@@ -253,7 +253,7 @@ install_hooks_manually() {
   echo ""
   echo "To complete manual setup, add these hooks to ${settings_file}:"
   echo '  "hooks": {'
-  echo '    "PreToolUse": [{ "type": "command", "command": "bash '"${claude_hooks_dir}"'/tkr-rewrite.sh" }],'
+  echo '    "PreToolUse": [{ "type": "command", "command": "node '"${claude_hooks_dir}"'/tkr-rewrite.js" }],'
   echo '    "SessionStart": [{ "type": "command", "command": "node '"${claude_hooks_dir}"'/session-start.js" }],'
   echo '    "UserPromptSubmit": [{ "type": "command", "command": "node '"${claude_hooks_dir}"'/user-prompt-submit.js" }]'
   echo '  }'
