@@ -128,7 +128,7 @@ When installed as a plugin (`--plugin`), tkr provides four token-reduction capab
 | **Capacity-aware delegation** | Route tasks to Codex or Gemini CLI when approaching rate limits |
 | **Output brevity** | Terse model prose with adjustable intensity (lite/full/ultra) |
 
-**Available skills:** `/tkr-search`, `/tkr-delegate`, `/tkr-brevity`, `/tkr-compress`, `/tkr-status`, `/tkr-config`
+**Available skills:** `/search`, `/delegate`, `/delegate-result-handling`, `/brevity`, `/compress`, `/status`, `/config`, `/cache-audit`, `/cache-footprint`, `/openrouter-on`, `/openrouter-off`
 
 ## Track Your Savings
 
