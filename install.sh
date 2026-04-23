@@ -198,6 +198,21 @@ chmod +x "$DEST"
 
 echo "Installed tkr to ${DEST}"
 
+# --- Remove competing tkr binaries that would shadow the production install ---
+# Covers ~/bin (common dev location) and GOPATH/bin (go install / make install).
+cleanup_competing_binaries() {
+  local installed="$1"
+  local gopath_bin="${GOPATH:-$HOME/go}/bin"
+  for candidate in "$HOME/bin/tkr$EXT" "$gopath_bin/tkr$EXT"; do
+    [ -f "$candidate" ] || continue
+    # Skip if it IS the installed location (shouldn't happen, but be safe)
+    [ "$candidate" = "$installed" ] && continue
+    rm "$candidate"
+    echo "  Removed competing tkr binary: ${candidate}"
+  done
+}
+cleanup_competing_binaries "$DEST"
+
 # --- PATH check ---
 
 case ":$PATH:" in
@@ -209,6 +224,14 @@ case ":$PATH:" in
     echo "  export PATH=\"${INSTALL_DIR}:\$PATH\""
     ;;
 esac
+
+# Warn if another tkr in PATH would shadow the installed binary
+ACTIVE_TKR="$(command -v tkr 2>/dev/null || true)"
+if [ -n "$ACTIVE_TKR" ] && [ "$ACTIVE_TKR" != "$DEST" ] && [ "$ACTIVE_TKR" != "${DEST%$EXT}" ]; then
+  echo ""
+  echo "Warning: 'tkr' still resolves to ${ACTIVE_TKR}, not ${DEST}"
+  echo "  That binary will shadow this install. Remove it or fix your PATH ordering."
+fi
 
 # --- CLI-only: done ---
 
