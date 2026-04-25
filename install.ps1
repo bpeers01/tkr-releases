@@ -126,8 +126,48 @@ try {
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 
     $Dest = Join-Path $InstallDir "tkr.exe"
-    Move-Item -Path $ArtifactPath -Destination $Dest -Force
+    $DestOld = "$Dest.old"
+
+    # Rename-before-copy: if a previous binary exists, rename it aside first.
+    # A plain Move-Item -Force silently fails when tkr.exe is locked (e.g. a
+    # running process holds the file open), leaving the stale binary in place
+    # with no error. The rename detects the lock and gives a clear error message.
+    if (Test-Path $Dest) {
+        if (Test-Path $DestOld) { Remove-Item $DestOld -Force -ErrorAction SilentlyContinue }
+        try {
+            Rename-Item -Path $Dest -NewName "$($Dest).old" -ErrorAction Stop
+        } catch {
+            Write-Error "tkr.exe is locked (another process is using it).`nClose all tkr processes and retry.`nDetails: $_"
+            exit 1
+        }
+    }
+
+    try {
+        Move-Item -Path $ArtifactPath -Destination $Dest -ErrorAction Stop
+    } catch {
+        # Restore old binary so the system is not left without tkr.
+        if (Test-Path $DestOld) {
+            Rename-Item -Path $DestOld -NewName $Dest -ErrorAction SilentlyContinue
+        }
+        Write-Error "Failed to install tkr.exe: $_"
+        exit 1
+    }
+
+    if (Test-Path $DestOld) { Remove-Item $DestOld -Force -ErrorAction SilentlyContinue }
     Write-Host "Installed tkr to $Dest"
+
+    # Verify the installed binary reports the expected version.
+    try {
+        $VersionOutput = & $Dest --version 2>$null
+        $InstalledVersion = ($VersionOutput -replace '^tkr\s+', '').Trim()
+        if ($InstalledVersion -eq $Tag) {
+            Write-Host "Version verified: $VersionOutput"
+        } else {
+            Write-Warning "Version mismatch: expected $Tag, got '$InstalledVersion'`nRestart your terminal and re-run the installer if the mismatch persists."
+        }
+    } catch {
+        Write-Warning "Could not verify installed version: $_"
+    }
 
     # --- PATH check ---
 
