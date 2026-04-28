@@ -233,6 +233,33 @@ if [ -n "$ACTIVE_TKR" ] && [ "$ACTIVE_TKR" != "$DEST" ] && [ "$ACTIVE_TKR" != "$
   echo "  That binary will shadow this install. Remove it or fix your PATH ordering."
 fi
 
+# --- Register tkr mcp server with Claude Code ---
+#
+# `tkr mcp` exposes the `delegate` tool over stdio. Registering it here
+# means a fresh install can immediately call delegate(...) from a Claude
+# Code session — no manual `claude mcp add` step needed.
+#
+# Idempotent: `claude mcp remove tkr` is best-effort (no-op when absent),
+# then `claude mcp add tkr -- $DEST mcp` registers fresh. We never fail
+# the install on MCP wiring errors — the binary itself is the load-bearing
+# artifact; MCP is opt-in.
+
+register_tkr_mcp_server() {
+  if ! command -v claude >/dev/null 2>&1; then
+    return 0
+  fi
+  echo ""
+  echo "Registering tkr mcp server with Claude Code..."
+  claude mcp remove tkr >/dev/null 2>&1 || true
+  if claude mcp add tkr -- "$DEST" mcp >/dev/null 2>&1; then
+    echo "  tkr mcp server registered (calls delegate(...) from any session)."
+  else
+    echo "  Note: 'claude mcp add tkr' failed — register manually with:" >&2
+    echo "    claude mcp add tkr -- \"$DEST\" mcp" >&2
+  fi
+}
+register_tkr_mcp_server
+
 # --- CLI-only: done ---
 
 if [ "$MODE" = "cli" ]; then
@@ -464,6 +491,7 @@ echo "  Plugin:  ${PLUGIN_DIR}"
 echo "  State:   ${TKR_STATE_DIR}"
 echo ""
 echo "Available skills: /tkr-search, /tkr-delegate, /tkr-brevity, /tkr-compress, /tkr-status, /tkr-config"
+echo "MCP tool:         delegate (from any Claude Code session — see docs/delegate-usage.md)"
 echo ""
 echo "Set up shell hook (optional, for terminal use):"
 echo "  tkr init -g"
