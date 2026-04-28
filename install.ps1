@@ -180,6 +180,30 @@ try {
         Write-Host "PATH updated. Restart your terminal for changes to take effect."
     }
 
+    # --- Register tkr mcp server with Claude Code ---
+    #
+    # `tkr mcp` exposes the `delegate` tool over stdio. Registering here means
+    # a fresh install can immediately call delegate(...) from a Claude Code
+    # session. Idempotent: remove-then-add. Never fails the install on MCP
+    # wiring errors — the binary is the load-bearing artifact, MCP is opt-in.
+
+    if (Get-Command claude -ErrorAction SilentlyContinue) {
+        Write-Host ""
+        Write-Host "Registering tkr mcp server with Claude Code..."
+        & claude mcp remove tkr 2>$null | Out-Null
+        try {
+            & claude mcp add tkr -- $Dest mcp 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "  tkr mcp server registered (calls delegate(...) from any session)."
+            } else {
+                throw "claude mcp add exited with code $LASTEXITCODE"
+            }
+        } catch {
+            Write-Host "  Note: 'claude mcp add tkr' failed - register manually with:" -ForegroundColor Yellow
+            Write-Host "    claude mcp add tkr -- `"$Dest`" mcp" -ForegroundColor Yellow
+        }
+    }
+
     # --- CLI-only: done ---
 
     if ($Mode -eq "cli") {
@@ -358,6 +382,7 @@ try {
     Write-Host "  State:   $TkrStateDir"
     Write-Host ""
     Write-Host "Available skills: /tkr-search, /tkr-delegate, /tkr-brevity, /tkr-compress, /tkr-status, /tkr-config"
+    Write-Host "MCP tool:         delegate (from any Claude Code session - see docs/delegate-usage.md)"
     Write-Host ""
     Write-Host "Set up shell hook (optional, for terminal use):"
     Write-Host "  tkr init -g"
