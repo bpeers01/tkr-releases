@@ -1,8 +1,8 @@
 # tkr — Token Reducer
 
-Recover Claude Code subscription cap headroom. tkr is a CLI proxy and Claude Code plugin that compresses tool output before Claude reads it — keeping you on Opus longer and stretching each session further.
+tkr is a Claude Code efficiency platform: compresses tool output, replaces grep/glob/read cycles with BM25 + tree-sitter search, routes overflow work to Codex or Gemini under pressure, and trims response verbosity — all aggregated into a unified savings ledger and live cap-burn console.
 
-Works with Claude Code, Gemini CLI, Cursor IDE, and Codex CLI. Ships 9 dedicated command handlers + 95 embedded TOML filters out of the box.
+Recovers Pro/Max/Team subscription cap headroom, keeps you on Opus longer, and surfaces burn before it bites. Works with Claude Code, Gemini CLI, Cursor IDE, and Codex CLI. Ships 9 dedicated command handlers + 95 embedded TOML filters + 16 plugin skills out of the box.
 
 ## Who this is for
 
@@ -54,10 +54,10 @@ Claude Code, Gemini CLI, and Cursor rewrite commands automatically — no manual
 
 ```bash
 # macOS / Linux / Git Bash
-TKR_VERSION=v3.0.1 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
+TKR_VERSION=v3.4.4 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v3.0.1
+irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v3.4.4
 ```
 
 #### Manual download
@@ -107,6 +107,21 @@ sha256sum -c checksums.sha256
 
 ## How It Works
 
+tkr attacks cap burn on four fronts in parallel:
+
+| Channel | What it does | Cap headroom recovered |
+|---------|-------------|------------------------|
+| **Compression** | Hooks rewrite commands so output passes through dedicated handlers or TOML filters before Claude reads it | 60–90% per filtered command |
+| **Search** | `tkr search` replaces grep/glob/read cycles with a single BM25 + tree-sitter query | 5–10× fewer context reads |
+| **Delegation** | Pressure-aware cascade routes overflow work to Codex/Gemini when `tkr signals` flags burn risk | Preserves Opus quota for complex work |
+| **Brevity** | `/brevity` skill tightens model prose (lite/full/ultra) | 20–40% output reduction |
+
+A live pressure classifier (`tkr signals`) fuses rate-limit + cache-miss + idle + context-size into a single routing decision, surfaced on the Claude Code statusline. `tkr usage burn` runs 16 burn detectors against session history to pinpoint waste; `tkr gain` aggregates savings across all four channels.
+
+**Plugin skills** (invoke with `/`): `/search`, `/delegate`, `/brevity`, `/compress`, `/status`, `/config`, `/usage`, `/ctx-audit`, `/consumption-report`, `/consumption-audit`, `/cache-audit`, `/cache-footprint`, `/semantic-on`, `/openrouter-on`, `/openrouter-off`, `/delegate-result-handling`.
+
+### Compression in action
+
 With the hook installed, commands are automatically rewritten before execution:
 
 ```
@@ -133,19 +148,6 @@ tkr curl https://api.example.com  # JSON response summarized
 tkr <any command>           # auto-filtered or passthrough
 ```
 
-## Four Reduction Channels
-
-When installed as a plugin, tkr attacks cap burn on four fronts:
-
-| Channel | What it does | Cap headroom recovered |
-|---------|-------------|------------------------|
-| **Compression** | Filters/compresses command output before Claude reads it | 60–90% per filtered command |
-| **Search** | Replaces grep/glob/read cycles with a single BM25 index query | 5–10× fewer context reads |
-| **Delegation** | Routes heavy tasks to Codex/Gemini when pressure is high | Preserves Opus quota for complex work |
-| **Brevity** | Instructs Claude to write shorter responses | 20–40% output reduction |
-
-**Plugin skills** (invoke with `/`): `/search`, `/delegate`, `/brevity`, `/compress`, `/status`, `/config`, `/usage`, `/ctx-audit`, `/consumption-report`, `/consumption-audit`, `/cache-audit`, `/cache-footprint`, `/semantic-on`, `/openrouter-on`, `/openrouter-off`, `/delegate-result-handling`.
-
 ## Track Your Savings
 
 ```bash
@@ -159,7 +161,7 @@ tkr signals               # live pressure classification (stay / offer / delegat
 ## Verify Installation
 
 ```bash
-tkr --version             # expected: tkr v3.0.1 (or latest)
+tkr --version             # expected: tkr v3.4.4 (or latest)
 tkr verify                # run built-in filter tests (292 should pass)
 ```
 
