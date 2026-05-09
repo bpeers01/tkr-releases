@@ -231,6 +231,26 @@ Active mode is injected at session start and enforced on every prompt.
 
 ---
 
+### Progressive Disclosure
+
+Diagnose and tune how Claude Code loads context per project — root `CLAUDE.md`, nested zone `CLAUDE.md`, path-scoped rules in `.claude/rules/`. tkr ships templates plus a transcript-driven analyzer that ranks the highest-leverage docs to write first.
+
+```bash
+tkr pd-tree                              # static view: what's eager / lazy / missing
+tkr pd-audit                             # scored snapshot of disclosure health
+tkr pd-replay --aggregate                # rank zone gaps and uncovered failures by real activity
+tkr pd-replay --aggregate --scaffold --apply
+                                         # write top-N zone CLAUDE.md from templates/zones/
+tkr pd-replay --scaffold-corrections --apply
+                                         # seed .claude/rules/cli-corrections.md (universal patterns)
+tkr pd-replay --learn-corrections --apply
+                                         # append project-specific failure patterns from transcripts
+```
+
+`pd-replay` reads your existing `~/.claude/projects/*` transcripts — no new instrumentation needed. Output ranks zones by `ops × sessions` so the recommended `CLAUDE.md` writes are the ones that pay back fastest. The shipped `cli-corrections.md` starter covers Windows-path / git / python / aws / gh failures observed as universal across multiple projects.
+
+---
+
 ## Track Your Savings
 
 ```bash
@@ -244,11 +264,12 @@ tkr signals               # live pressure classification (stay / offer / delegat
 
 ## Plugin Skills
 
-When installed as a plugin, tkr registers 16 on-demand skills invocable with `/` inside Claude Code:
+When installed as a plugin, tkr registers 18 on-demand skills invocable with `/` inside Claude Code:
 
 | Skill | What it does |
 |-------|-------------|
 | `/search` | Hybrid BM25 search across project code, docs, and diagrams |
+| `/pd-audit` | Score progressive-disclosure setup — zone gaps, rule waste, eager-import cost |
 | `/delegate` | Route a task to cheap models via the native agentic loop |
 | `/delegate-result-handling` | Post-delegation result validation and inline integration |
 | `/brevity` | Set output verbosity (lite / full / ultra) |
@@ -261,6 +282,7 @@ When installed as a plugin, tkr registers 16 on-demand skills invocable with `/`
 | `/consumption-audit` | Drill into which commands drove the burn |
 | `/cache-audit` | Audit cache usage and identify miss patterns |
 | `/cache-footprint` | Measure tkr's own cache load |
+| `/memory-compact` | Score auto-memory files for compaction (stale, redundant, verbose, shipped-marker heuristics) and walk through trim/rewrite |
 | `/semantic-on` | Enable semantic tool-output compression |
 | `/openrouter-on` | Enable OpenRouter routing (alternative to CLI) |
 | `/openrouter-off` | Disable OpenRouter routing and restore subscription |
@@ -268,7 +290,7 @@ When installed as a plugin, tkr registers 16 on-demand skills invocable with `/`
 ## Verify Installation
 
 ```bash
-tkr --version             # expected: tkr v3.5.0 (or latest)
+tkr --version             # expected: tkr v3.9.0 (or latest)
 tkr verify                # run built-in filter tests (292 should pass)
 ```
 
