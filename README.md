@@ -53,10 +53,10 @@ Claude Code, Gemini CLI, and Cursor rewrite commands automatically — no manual
 
 ```bash
 # macOS / Linux / Git Bash
-TKR_VERSION=v3.5.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
+TKR_VERSION=v3.12.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v3.5.0
+irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v3.12.0
 ```
 
 #### Manual download
@@ -260,11 +260,12 @@ tkr gain --economics      # API-rate equivalent
 tkr usage                 # per-session cost + model mix
 tkr usage burn            # 16 burn detectors against session history
 tkr signals               # live pressure classification (stay / offer / delegate)
+tkr signals --current     # compact one-line state for model-pull (v3.12.0+)
 ```
 
 ## Plugin Skills
 
-When installed as a plugin, tkr registers 18 on-demand skills invocable with `/` inside Claude Code:
+When installed as a plugin, tkr registers 21 on-demand skills invocable with `/` inside Claude Code:
 
 | Skill | What it does |
 |-------|-------------|
@@ -286,11 +287,14 @@ When installed as a plugin, tkr registers 18 on-demand skills invocable with `/`
 | `/semantic-on` | Enable semantic tool-output compression |
 | `/openrouter-on` | Enable OpenRouter routing (alternative to CLI) |
 | `/openrouter-off` | Disable OpenRouter routing and restore subscription |
+| `/handoff` | Structured `.continue-here.md` writer for cross-session handoff |
+| `/hotspot` | Identify high-leverage refactor targets via transcript-pattern analysis |
+| `/resume-coach` | Replay prior session's last decision + state on cold resume |
 
 ## Verify Installation
 
 ```bash
-tkr --version             # expected: tkr v3.9.0 (or latest)
+tkr --version             # expected: tkr v3.12.0 (or latest)
 tkr verify                # run built-in filter tests (292 should pass)
 ```
 
