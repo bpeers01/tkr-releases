@@ -261,6 +261,7 @@ tkr usage                 # per-session cost + model mix
 tkr usage burn            # 16 burn detectors against session history
 tkr signals               # live pressure classification (stay / offer / delegate)
 tkr signals --current     # compact one-line state for model-pull (v3.12.0+)
+tkr status                # alias for `tkr signals --current` (v3.13.0+)
 ```
 
 ## Plugin Skills
@@ -294,7 +295,7 @@ When installed as a plugin, tkr registers 21 on-demand skills invocable with `/`
 ## Verify Installation
 
 ```bash
-tkr --version             # expected: tkr v3.12.0 (or latest)
+tkr --version             # expected: tkr v3.13.0 (or latest)
 tkr verify                # run built-in filter tests (292 should pass)
 ```
 
