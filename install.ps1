@@ -381,7 +381,7 @@ try {
     Write-Host "  Plugin:  $PluginDir"
     Write-Host "  State:   $TkrStateDir"
     Write-Host ""
-    Write-Host "Available skills: /tkr-search, /tkr-delegate, /tkr-brevity, /tkr-compress, /tkr-status, /tkr-config"
+    Write-Host "Available skills: /tkr-search, /tkr-delegate, /brevity, /tkr-compress, /tkr-status, /tkr-config"
     Write-Host "MCP tool:         delegate (from any Claude Code session - see docs/delegate-usage.md)"
     Write-Host ""
     Write-Host "Set up shell hook (optional, for terminal use):"
