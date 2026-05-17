@@ -290,7 +290,7 @@ When installed as a plugin, tkr registers 21 on-demand skills invocable with `/`
 | `/openrouter-off` | Disable OpenRouter routing and restore subscription |
 | `/handoff` | Structured `.continue-here.md` writer for cross-session handoff |
 | `/hotspot` | Identify high-leverage refactor targets via transcript-pattern analysis |
-| `/resume-coach` | Replay prior session's last decision + state on cold resume |
+| `/continue` | Load prior-session carry-over: reads `.continue-here.md` if fresh (<24h), else builds summary from JSONL. Pairs with `/handoff`. `/resume-coach` kept as 30d alias. |
 
 ## Verify Installation
 
