@@ -266,14 +266,13 @@ tkr status                # alias for `tkr signals --current` (v3.13.0+)
 
 ## Plugin Skills
 
-When installed as a plugin, tkr registers 21 on-demand skills invocable with `/` inside Claude Code:
+When installed as a plugin, tkr registers 20 on-demand skills invocable with `/` inside Claude Code:
 
 | Skill | What it does |
 |-------|-------------|
 | `/search` | Hybrid BM25 search across project code, docs, and diagrams |
 | `/pd-audit` | Score progressive-disclosure setup — zone gaps, rule waste, eager-import cost |
 | `/delegate` | Route a task to cheap models via the native agentic loop |
-| `/delegate-result-handling` | Post-delegation result validation and inline integration |
 | `/brevity` | Set output verbosity (lite / full / ultra) |
 | `/compress` | Compress a specific tool output inline |
 | `/status` | Plugin health, token savings summary, hook status |
