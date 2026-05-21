@@ -210,6 +210,11 @@ try {
         Write-Host ""
         Write-Host "Set up Claude Code integration:"
         Write-Host "  tkr init -g"
+        Write-Host ""
+        Write-Host "Verifying install..."
+        try { & $Dest doctor } catch { }
+        Write-Host ""
+        Write-Host "Re-run anytime with: tkr doctor"
         exit 0
     }
 
@@ -383,9 +388,30 @@ try {
     Write-Host ""
     Write-Host "Available skills: /tkr-search, /tkr-delegate, /brevity, /tkr-compress, /tkr-status, /tkr-config"
     Write-Host "MCP tool:         delegate (from any Claude Code session - see docs/delegate-usage.md)"
+    Write-Host "                  tkr_graph (structural code intel - who calls X, what breaks if I change Y)"
     Write-Host ""
     Write-Host "Set up shell hook (optional, for terminal use):"
     Write-Host "  tkr init -g"
+    Write-Host ""
+
+    # POSIX sh check (Windows-only): tkr graph install-hooks ships a sh-based
+    # hook that silently no-ops under native cmd.exe git. Surface the hint so
+    # users on native git install Git for Windows / msys2 / WSL before they
+    # first hit `tkr_graph` (which auto-installs the hooks).
+    $hasShell = (Get-Command sh -ErrorAction SilentlyContinue) -or
+                (Get-Command bash -ErrorAction SilentlyContinue)
+    if (-not $hasShell) {
+        Write-Host "Heads up: native Windows git detected (no sh/bash on PATH)." -ForegroundColor Yellow
+        Write-Host "  tkr's graph hooks need Git for Windows / msys2 / WSL to fire on branch swaps." -ForegroundColor Yellow
+        Write-Host "  Without one of those, set TKR_GRAPH_FORCE_HOOKS=1 to install hooks anyway" -ForegroundColor Yellow
+        Write-Host "  (the 24h staleness fallback still keeps the graph correct, just slower)." -ForegroundColor Yellow
+        Write-Host ""
+    }
+
+    Write-Host "Verifying install..."
+    try { & $Dest doctor } catch { }
+    Write-Host ""
+    Write-Host "Re-run anytime with: tkr doctor"
 
 } finally {
     # Cleanup temp dir
