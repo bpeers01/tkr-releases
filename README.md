@@ -266,7 +266,7 @@ tkr status                # alias for `tkr signals --current` (v3.13.0+)
 
 ## Plugin Skills
 
-When installed as a plugin, tkr registers 20 on-demand skills invocable with `/` inside Claude Code:
+When installed as a plugin, tkr registers 21 on-demand skills invocable with `/` inside Claude Code:
 
 | Skill | What it does |
 |-------|-------------|
@@ -287,14 +287,15 @@ When installed as a plugin, tkr registers 20 on-demand skills invocable with `/`
 | `/semantic-on` | Enable semantic tool-output compression |
 | `/openrouter-on` | Enable OpenRouter routing (alternative to CLI) |
 | `/openrouter-off` | Disable OpenRouter routing and restore subscription |
-| `/handoff` | Structured `.continue-here.md` writer for cross-session handoff |
+| `/handoff` | Structured handoff writer (drops to `.tkr/handoffs/<id>-YYYYMMDD-HHMM.md`); includes `/handoff prune` verb for cleaning stale files |
 | `/hotspot` | Identify high-leverage refactor targets via transcript-pattern analysis |
-| `/continue` | Load prior-session carry-over: reads `.continue-here.md` if fresh (<24h), else builds summary from JSONL. Pairs with `/handoff`. `/resume-coach` kept as 30d alias. |
+| `/continue` | Load prior-session carry-over: scans `.tkr/handoffs/*.md` (1 file auto-loads, N prompts), else JSONL fallback. Pairs with `/handoff`. `/resume-coach` kept as 30d alias. |
 
 ## Verify Installation
 
 ```bash
-tkr --version             # expected: tkr v3.13.0 (or latest)
+tkr --version             # expected: tkr v5.0.0 (or latest)
+tkr doctor                # 8-row health check — PASS/WARN/FAIL; exit 0 or 2
 tkr verify                # run built-in filter tests (292 should pass)
 ```
 
