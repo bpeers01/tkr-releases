@@ -266,6 +266,11 @@ if [ "$MODE" = "cli" ]; then
   echo ""
   echo "Set up Claude Code integration:"
   echo "  tkr init -g"
+  echo ""
+  echo "Verifying install..."
+  "$DEST" doctor || true
+  echo ""
+  echo "Re-run anytime with: tkr doctor"
   exit 0
 fi
 
@@ -492,6 +497,12 @@ echo "  State:   ${TKR_STATE_DIR}"
 echo ""
 echo "Available skills: /tkr-search, /tkr-delegate, /brevity, /tkr-compress, /tkr-status, /tkr-config"
 echo "MCP tool:         delegate (from any Claude Code session — see docs/delegate-usage.md)"
+echo "                  tkr_graph (structural code intel — who calls X, what breaks if I change Y)"
 echo ""
 echo "Set up shell hook (optional, for terminal use):"
 echo "  tkr init -g"
+echo ""
+echo "Verifying install..."
+"$DEST" doctor || true
+echo ""
+echo "Re-run anytime with: tkr doctor"
