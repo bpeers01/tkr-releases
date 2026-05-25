@@ -463,10 +463,19 @@ echo "Registering plugin with Claude Code..."
 if command -v claude >/dev/null 2>&1; then
   # Register as a marketplace, then install the plugin from it.
   # Claude Code uses marketplaces (plugin directories), not direct path installs.
+  #
+  # Upgrade path: `marketplace add` and `plugin install` are no-ops when the
+  # marketplace/plugin is already registered — they do NOT refresh from a
+  # bumped plugin.json. On an existing install we fall through to the
+  # `marketplace update` + `plugin update` pair, which re-reads PLUGIN_DIR's
+  # plugin.json and copies the new version into the CC marketplace cache
+  # (~/.claude/plugins/cache/tkr/tkr/<ver>/) + bumps installed_plugins.json.
   REGISTERED=false
-  if claude plugin marketplace add "$PLUGIN_DIR" 2>/dev/null; then
-    if claude plugin install tkr 2>/dev/null; then
-      echo "Plugin registered: tkr@tkr (marketplace + install)."
+  if claude plugin marketplace add "$PLUGIN_DIR" 2>/dev/null \
+     || claude plugin marketplace update tkr 2>/dev/null; then
+    if claude plugin install tkr 2>/dev/null \
+       || claude plugin update tkr 2>/dev/null; then
+      echo "Plugin registered: tkr@tkr (marketplace + install/update)."
       REGISTERED=true
       echo "Cleaning up legacy hooks..."
       cleanup_legacy_hooks
