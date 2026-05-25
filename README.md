@@ -3,20 +3,24 @@
 [![Latest release](https://img.shields.io/github/v/release/bpeers01/tkr-releases?label=release&sort=semver)](https://github.com/bpeers01/tkr-releases/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-tkr is a token-efficiency platform for Claude Code users who hit the Opus cap. It compresses tool output, replaces grep/glob/read cycles with semantic search, runs a native agentic loop against cheap models when Opus is under pressure, and trims response verbosity — all surfaced in a unified savings ledger and live cap-burn console.
+**Your Claude Code subscription has a weekly cap. tkr makes that cap go further.**
 
-## Who this is for
+It works on four fronts at once: compresses bloated tool output before Claude reads it, collapses grep+read chains into one search, routes overflow work to cheap models when Opus is under pressure, and trims response verbosity. Same workflow, more Opus per week — no plan upgrade required.
 
-Built for **Claude Code users on the Pro, Max, or Team subscription** who hit the 5-hour or weekly Opus cap during active development.
+Built for Claude Code on **Pro, Max, or Team**. API users get the same wins paid in dollars instead of cap headroom (`tkr gain --economics`). Works on macOS, Linux, and Windows. Single static binary, zero runtime dependencies.
 
-If you run Claude Code for real coding work — multiple sessions per day, long contexts, agentic tasks — you burn cap headroom faster than the plan's light-usage estimate predicts. tkr attacks the biggest sources of waste at source.
+> **What's new in v5.1.0** — `tkr report` ships as a full subcommand: generate a self-contained HTML snapshot of your Claude Code efficiency before vs. after tkr, version-by-version progression, or one comprehensive view. Cache TTL is now a first-class signal on the statusline. Plus a hardening sweep across hooks, MCP, delegation, and signals. [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
 
-**Good fit:**
-- Long agentic tasks where tool outputs flood the context window
-- You hit the Opus weekly cap and get downgraded mid-task
-- You want more Opus time per week without upgrading your plan
+## Is this for you?
 
-**Not for you if:** you pay per token on the API and already track dollar costs via a usage dashboard. The framing here is headroom, not dollars — though `tkr gain --economics` shows the API-rate equivalent if you want the conversion.
+Yes, if any of these sound familiar:
+
+- You hit the **Opus weekly cap** mid-task and get bumped to Sonnet (or blocked)
+- Long agentic sessions where **tool output floods the context window**
+- You're paying per token via the **Claude API** and want everything bolted into one efficiency layer
+- You want Claude to reach for `tkr_search` / `tkr_graph` instead of running grep+read chains
+
+You'll get the most out of tkr on the **Pro / Max / Team subscription** doing real day-job development — multiple sessions, long contexts, agentic tasks. That's where the weekly Opus cap bites hardest and where saved tokens turn directly into more Opus time.
 
 ## Install
 
@@ -53,10 +57,10 @@ Claude Code, Gemini CLI, and Cursor rewrite commands automatically — no manual
 
 ```bash
 # macOS / Linux / Git Bash
-TKR_VERSION=v3.12.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
+TKR_VERSION=v5.1.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v3.12.0
+irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.1.0
 ```
 
 #### Manual download
@@ -88,16 +92,16 @@ sha256sum -c checksums.sha256
 
 ## How It Works
 
-tkr attacks cap burn on four fronts in parallel:
+Four independent levers, working together. You get the combined effect.
 
-| Channel | What it does | Cap headroom recovered |
+| Lever | What it does | Cap headroom recovered |
 |---------|-------------|------------------------|
 | **Compression** | Hooks rewrite commands so output passes through dedicated handlers or TOML filters before Claude reads it | 60–90% per filtered command |
 | **Search** | `tkr search` replaces grep/glob/read cycles with a single BM25 + tree-sitter query | 5–10× fewer context reads |
 | **Delegation** | A native agentic loop routes overflow work to cheap OpenRouter models when `tkr signals` flags burn risk | Preserves Opus quota for complex work |
-| **Brevity** | `/brevity` tightens model prose (lite/full/ultra) | 20–40% output reduction |
+| **Brevity** | `/brevity` tightens model prose (lite / full / ultra) | 20–40% output reduction |
 
-A live pressure classifier (`tkr signals`) fuses rate-limit + cache-miss + idle + context-size into a single routing decision, surfaced on the Claude Code statusline. `tkr usage burn` runs 16 burn detectors against session history to pinpoint waste. `tkr gain` aggregates savings across all four channels.
+Above all four sits a live pressure classifier — `tkr signals` — that fuses rate-limit consumption, cache-miss rate, idle time, and context size into a single routing decision, surfaced on the statusline. `tkr usage burn` runs 16 burn detectors against your session history to pinpoint waste. `tkr report` produces a self-contained HTML snapshot you can share or save. `tkr gain` aggregates savings across all four channels into one number.
 
 ---
 
@@ -139,9 +143,12 @@ One query replaces 5–10 grep/glob/read cycles. BM25 lexical search + tree-sitt
 tkr search "query"                # search with ranked results
 tkr search "query" --human        # human-readable output
 tkr search "query" --context-pack # grouped multi-source results
+tkr search "query" --read         # include full file content at matched line ranges
 tkr search --callers FuncName     # who calls this symbol?
 tkr search --callees FuncName     # what does this symbol call?
 ```
+
+Available to Claude Code via the `tkr_search`, `tkr_read`, and `tkr_graph` MCP tools. The graph backend (SQLite + FTS5 over symbol names, qualified names, signatures, and docstrings) also exposes `op=implementors` (v5) for interface → satisfying-type lookups, `op=impact` for "what breaks if I change file Y?", and per-edge resolver provenance for debuggable confidence scores. Run `tkr graph install-hooks` once to keep the index fresh across branch swaps.
 
 ---
 
@@ -231,6 +238,20 @@ Active mode is injected at session start and enforced on every prompt.
 
 ---
 
+### Keepalive (1h-TTL accounts)
+
+If you're on a 1h-TTL plan (Max 20×), tkr installs an `asyncRewake` watcher hook that refreshes the prompt-cache TTL during idle periods. The watcher polls in the background every 60 seconds and fires once per idle window at ~55 minutes — no synthetic mid-conversation turns, no `ScheduleWakeup` contract in the system prompt, no model-visible chatter. The next prompt after a long break hits a warm cache instead of paying ~$0.40+ in re-read tokens.
+
+```bash
+tkr keepalive check                # eligibility — confirms account is 1h-TTL
+tkr keepalive watcher-state        # current session: idle seconds, threshold, fires-in
+tkr keepalive prune-state          # remove orphan ~/.tkr/keepalive/<sid>/ dirs
+```
+
+The statusline shows watcher state as `keepalive:watching | armed | fired@HH:MM | stale | off`. Disable entirely with `TKR_KEEPALIVE_DISABLE=1`; tune the threshold via `TKR_KEEPALIVE_IDLE_MIN=N`.
+
+---
+
 ### Progressive Disclosure
 
 Diagnose and tune how Claude Code loads context per project — root `CLAUDE.md`, nested zone `CLAUDE.md`, path-scoped rules in `.claude/rules/`. tkr ships templates plus a transcript-driven analyzer that ranks the highest-leverage docs to write first.
@@ -251,6 +272,25 @@ tkr pd-replay --learn-corrections --apply
 
 ---
 
+### Reports (new in v5.1.0)
+
+Generate a self-contained HTML snapshot of your Claude Code efficiency. Three modes; `tkr report` with no arguments picks the best one for the data you have.
+
+```bash
+tkr report                       # auto-select — comprehensive if both datasets exist
+tkr report install-impact        # before vs. after tkr was installed
+tkr report version-progression   # efficiency per tkr version you've run
+tkr report comprehensive         # everything in one document
+tkr report --open                # write the file and open it in your browser
+tkr report --preview             # print a text summary to stdout, no file
+```
+
+Reports are redacted by default (project names and paths stable-hashed) so you can share one without leaking your codebase. Pass `--no-redact` (with paired confirm flag) if you want raw labels for your own use. Output lands under `<UserConfigDir>/tkr/reports/`.
+
+What it actually shows: cap-units saved per channel, top burn drivers, before/after side-by-side, version-over-version trend lines, and which detectors flagged what. The v5.1.0 release came with eight ADRs explaining the data model and redaction guarantees — see `docs/decisions/`.
+
+---
+
 ## Track Your Savings
 
 ```bash
@@ -260,8 +300,11 @@ tkr gain --economics      # API-rate equivalent
 tkr usage                 # per-session cost + model mix
 tkr usage burn            # 16 burn detectors against session history
 tkr signals               # live pressure classification (stay / offer / delegate)
-tkr signals --current     # compact one-line state for model-pull (v3.12.0+)
-tkr status                # alias for `tkr signals --current` (v3.13.0+)
+tkr signals --current     # compact one-line state for model-pull
+                          # v5.1.0+ appends ttl=Ns/<source> (config|direct|inferred|default)
+                          # when the prompt-cache TTL has been detected — ADR-0009
+tkr status                # alias for `tkr signals --current`
+tkr doctor                # 8-row install/health matrix; exit 0/2 (CI-friendly)
 ```
 
 ## Plugin Skills
@@ -290,11 +333,12 @@ When installed as a plugin, tkr registers 21 on-demand skills invocable with `/`
 | `/handoff` | Structured handoff writer (drops to `.tkr/handoffs/<id>-YYYYMMDD-HHMM.md`); includes `/handoff prune` verb for cleaning stale files |
 | `/hotspot` | Identify high-leverage refactor targets via transcript-pattern analysis |
 | `/continue` | Load prior-session carry-over: scans `.tkr/handoffs/*.md` (1 file auto-loads, N prompts), else JSONL fallback. Pairs with `/handoff`. `/resume-coach` kept as 30d alias. |
+| `/explore` | Read-only repo exploration via Task subagent — keeps the main agent's context clean while a child agent maps a subsystem |
 
 ## Verify Installation
 
 ```bash
-tkr --version             # expected: tkr v5.0.0 (or latest)
+tkr --version             # expected: tkr v5.1.0 (or latest)
 tkr doctor                # 8-row health check — PASS/WARN/FAIL; exit 0 or 2
 tkr verify                # run built-in filter tests (292 should pass)
 ```
@@ -313,11 +357,11 @@ Plugin status: `/status` skill inside Claude Code.
 
 See [TROUBLESHOOTING.md](https://github.com/bpeers01/tkr/blob/main/docs/TROUBLESHOOTING.md) for common issues:
 
-- `bash.exe.stackdump` on Windows (fixed in v3.0.0 via SIGPIPE trap)
-- `tkr.exe` locked during upgrade (v3.0.0 installer catches this with rename-before-copy)
-- Version mismatch after upgrade
 - Hook / PATH setup
 - MCP server not appearing in `claude mcp list`
+- `tkr.exe` locked during upgrade on Windows (installer auto-handles with rename-before-copy)
+- Version mismatch after upgrade
+- Statusline shows the wrong pressure / mode
 
 ## Support
 
