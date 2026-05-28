@@ -338,7 +338,7 @@ When installed as a plugin, tkr registers 21 on-demand skills invocable with `/`
 ## Verify Installation
 
 ```bash
-tkr --version             # expected: tkr v5.4.0 (or latest)
+tkr --version             # expected: tkr v5.4.1 (or latest)
 tkr doctor                # 8-row health check — PASS/WARN/FAIL; exit 0 or 2
 tkr verify                # run built-in filter tests (292 should pass)
 ```
