@@ -9,7 +9,7 @@ It works on four fronts at once: compresses bloated tool output before Claude re
 
 Built for Claude Code on **Pro, Max, or Team**. API users get the same wins paid in dollars instead of cap headroom (`tkr gain --economics`). Works on macOS, Linux, and Windows. Single static binary, zero runtime dependencies.
 
-> **What's new in v5.1.0** — `tkr report` ships as a full subcommand: generate a self-contained HTML snapshot of your Claude Code efficiency before vs. after tkr, version-by-version progression, or one comprehensive view. Cache TTL is now a first-class signal on the statusline. Plus a hardening sweep across hooks, MCP, delegation, and signals. [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
+> **What's new in v5.6.0** — Leaner prefix: `tkr init` no longer writes the `@TKR.md` awareness doc by default (the `tkr claude` system prompt already carries the playbook), trimming duplicated tokens at the ~21× cache multiplier — opt back in with `tkr init --awareness-doc`. Two Windows fixes land too: the keepalive resume misfire and the `python3` Microsoft Store alias hang, plus a CI line-ending fix. Building on v5.5.0, which retired the fixed context-pressure threshold→action ladder in favor of a cost model (every turn re-reads the whole context at the cache-read rate) plus judgment. [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
 
 ## Is this for you?
 
@@ -62,10 +62,10 @@ Claude Code, Gemini CLI, and Cursor rewrite commands automatically — no manual
 
 ```bash
 # macOS / Linux / Git Bash
-TKR_VERSION=v5.1.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
+TKR_VERSION=v5.6.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.1.0
+irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.6.0
 ```
 
 #### Manual download
@@ -277,7 +277,7 @@ tkr pd-replay --learn-corrections --apply
 
 ---
 
-### Reports (new in v5.1.0)
+### Reports
 
 Generate a self-contained HTML snapshot of your Claude Code efficiency. Three modes; `tkr report` with no arguments picks the best one for the data you have.
 
@@ -343,7 +343,7 @@ When installed as a plugin, tkr registers 21 on-demand skills invocable with `/`
 ## Verify Installation
 
 ```bash
-tkr --version             # expected: tkr v5.5.0 (or latest)
+tkr --version             # expected: tkr v5.6.0 (or latest)
 tkr doctor                # 8-row health check — PASS/WARN/FAIL; exit 0 or 2
 tkr verify                # run built-in filter tests (292 should pass)
 ```
