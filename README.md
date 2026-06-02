@@ -46,7 +46,12 @@ tkr init -g --gemini # Gemini CLI
 tkr init -g --cursor # Cursor IDE
 tkr init --codex     # Codex CLI (project rules — AGENTS.md awareness)
 tkr init --agents    # Claude Code subagents (.claude/agents/*.md frontmatter)
+tkr init --awareness-doc # also write TKR.md + @-import it into CLAUDE.md
 ```
+
+> `tkr init` no longer writes the `TKR.md` awareness doc by default — the
+> `tkr claude` system prompt already carries the playbook. Add
+> `--awareness-doc` (alias `--tkr-md`) if you run plain `claude` and want it.
 
 Claude Code, Gemini CLI, and Cursor rewrite commands automatically — no manual `tkr` prefixing needed after this.
 
