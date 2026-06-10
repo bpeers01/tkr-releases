@@ -9,7 +9,16 @@ It works on four fronts at once: compresses bloated tool output before Claude re
 
 Built for Claude Code on **Pro, Max, or Team**. API users get the same wins paid in dollars instead of cap headroom (`tkr gain --economics`). Works on macOS, Linux, and Windows. Single static binary, zero runtime dependencies.
 
-> **What's new in v5.6.0** — Leaner prefix: `tkr init` no longer writes the `@TKR.md` awareness doc by default (the `tkr claude` system prompt already carries the playbook), trimming duplicated tokens at the ~21× cache multiplier — opt back in with `tkr init --awareness-doc`. Two Windows fixes land too: the keepalive resume misfire and the `python3` Microsoft Store alias hang, plus a CI line-ending fix. Building on v5.5.0, which retired the fixed context-pressure threshold→action ladder in favor of a cost model (every turn re-reads the whole context at the cache-read rate) plus judgment. [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
+> **What's new in v5.8.0** — "Compression borrows": JSON-array Bash
+> output ≥2KB is automatically reshaped into a compact columnar table
+> plus a `[CTX:json-array:<hash8>]` marker; raw bytes are stored
+> losslessly and retrievable via `tkr expand CTX:...` (kill switch
+> `TKR_JSON_COLUMNIZE=0`). `tkr_search` gains `within=<id>` — BM25
+> search scoped to the rows of a stored artifact, so you can drill into
+> a compressed JSON dump without re-fetching it. New `skeleton` read
+> mode on `tkr fread` and `tkr_read`: signatures + elided bodies, a
+> step between `map` and `full`. `tkr expand` now resolves `CTX:` ids
+> alongside `DELTA:` ids. [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
 
 ## Is this for you?
 
@@ -62,10 +71,10 @@ Claude Code, Gemini CLI, and Cursor rewrite commands automatically — no manual
 
 ```bash
 # macOS / Linux / Git Bash
-TKR_VERSION=v5.6.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
+TKR_VERSION=v5.8.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.6.0
+irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.8.0
 ```
 
 #### Manual download
@@ -124,7 +133,21 @@ cat README.md    →  tkr cat README.md     (line-numbered, binary-safe)
 env              →  tkr env               (capped at 25 lines)
 ```
 
-9 dedicated handlers cover the highest-volume commands. 95 TOML filters catch everything else. If tkr doesn't recognize a command, it passes through unchanged — no risk, no surprises.
+9 dedicated handlers cover the highest-volume commands. 95 TOML filters
+catch everything else. If tkr doesn't recognize a command, it passes
+through unchanged — no risk, no surprises.
+
+**JSON-array columnization (v5.8.0):** JSON-array Bash output ≥2KB is
+automatically reshaped into a compact columnar table and a
+`[CTX:json-array:<hash8>]` marker is appended. The raw original bytes
+are stored losslessly; compression only fires when the full output
+(body + marker) is strictly smaller than the raw payload — no
+information is ever lost. Arrays with mixed object shapes are bucketed
+(`[CTX:json-array-bucketed:<hash8>]`). Retrieve the original with
+`tkr expand CTX:<class>:<hash8>` or `tkr artifact show <id>`. Disable
+with `TKR_JSON_COLUMNIZE=0`. Big `aws`/`gh`/`kubectl`-style JSON dumps
+now reach the model as compact column tables backed by a retrievable
+raw original.
 
 Direct use also works:
 
@@ -152,6 +175,11 @@ tkr search "query" --read         # include full file content at matched line ra
 tkr search --callers FuncName     # who calls this symbol?
 tkr search --callees FuncName     # what does this symbol call?
 ```
+
+MCP `tkr_search` also accepts `within=<CTX:...id>` — BM25 search scoped
+to the rows of a single stored columnized artifact, so you can drill
+into a compressed JSON dump without re-fetching the raw payload.
+`within=` is MCP-only; there is no `--within` CLI flag.
 
 Available to Claude Code via the `tkr_search`, `tkr_read`, and `tkr_graph` MCP tools. The graph backend (SQLite + FTS5 over symbol names, qualified names, signatures, and docstrings) also exposes `op=implementors` (v5) for interface → satisfying-type lookups, `op=impact` for "what breaks if I change file Y?", and per-edge resolver provenance for debuggable confidence scores. Run `tkr graph install-hooks` once to keep the index fresh across branch swaps.
 
@@ -343,7 +371,7 @@ When installed as a plugin, tkr registers 21 on-demand skills invocable with `/`
 ## Verify Installation
 
 ```bash
-tkr --version             # expected: tkr v5.6.0 (or latest)
+tkr --version             # expected: tkr v5.8.0 (or latest)
 tkr doctor                # 8-row health check — PASS/WARN/FAIL; exit 0 or 2
 tkr verify                # run built-in filter tests (292 should pass)
 ```
