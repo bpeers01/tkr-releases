@@ -9,16 +9,17 @@ It works on four fronts at once: compresses bloated tool output before Claude re
 
 Built for Claude Code on **Pro, Max, or Team**. API users get the same wins paid in dollars instead of cap headroom (`tkr gain --economics`). Works on macOS, Linux, and Windows. Single static binary, zero runtime dependencies.
 
-> **What's new in v5.8.0** — "Compression borrows": JSON-array Bash
-> output ≥2KB is automatically reshaped into a compact columnar table
-> plus a `[CTX:json-array:<hash8>]` marker; raw bytes are stored
-> losslessly and retrievable via `tkr expand CTX:...` (kill switch
-> `TKR_JSON_COLUMNIZE=0`). `tkr_search` gains `within=<id>` — BM25
-> search scoped to the rows of a stored artifact, so you can drill into
-> a compressed JSON dump without re-fetching it. New `skeleton` read
-> mode on `tkr fread` and `tkr_read`: signatures + elided bodies, a
-> step between `map` and `full`. `tkr expand` now resolves `CTX:` ids
-> alongside `DELTA:` ids. [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
+> **What's new in v5.9.0** — Structured test parsers: pytest failures
+> keep their `E`-line assert detail while progress noise is stripped,
+> and a new `tkr node-test` handler runs `node --test` through a TAP
+> reporter keeping only failures + counts. Failed lossy-filtered
+> commands now tee their raw output to the artifact store as
+> `[CTX:tee:<hash8>]` markers — recover the full original with
+> `tkr expand`. The rewrite hook gains a non-invasive `suggest` mode
+> and an `exclude_commands` list, unwraps `npx`/`pnpm exec`/`bunx`/
+> `uv run` wrappers, and self-checks hook-script integrity (red
+> `HOOK!` statusline badge on drift). Plus grep/rg multi-path and
+> statusline parsing fixes. [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
 
 ## Is this for you?
 
@@ -71,10 +72,10 @@ Claude Code, Gemini CLI, and Cursor rewrite commands automatically — no manual
 
 ```bash
 # macOS / Linux / Git Bash
-TKR_VERSION=v5.8.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
+TKR_VERSION=v5.9.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.8.0
+irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.9.0
 ```
 
 #### Manual download
@@ -129,13 +130,26 @@ git diff         →  tkr git diff          (stat summary + compacted hunks)
 ls               →  tkr ls                (extension-grouped listing)
 grep "pattern"   →  tkr grep "pattern"    (matches grouped by file)
 npm test         →  tkr test npm test     (error-focused output)
+node --test      →  tkr node-test node --test  (TAP-parsed: failures + counts)
 cat README.md    →  tkr cat README.md     (line-numbered, binary-safe)
 env              →  tkr env               (capped at 25 lines)
 ```
 
-9 dedicated handlers cover the highest-volume commands. 95 TOML filters
+10 dedicated handlers cover the highest-volume commands. 95 TOML filters
 catch everything else. If tkr doesn't recognize a command, it passes
-through unchanged — no risk, no surprises.
+through unchanged — no risk, no surprises. `npx` / `pnpm exec` / `bunx` /
+`uv run` wrappers are unwrapped and the inner command re-dispatched
+(v5.9.0). Prefer hints over rewrites? Set `[hooks] mode = "suggest"` to
+keep commands untouched and get a one-line tip instead, or list commands
+in `exclude_commands` to opt them out entirely.
+
+**Structured test parsing (v5.9.0):** `pytest` output keeps the
+`FAILURES`/`ERRORS` blocks with `E`-line assert detail and strips
+captured-output noise, headers, and progress dots. `node --test` runs
+through a TAP reporter (`tkr node-test`) keeping failure diagnostics
+and counts only. When a failing command's filter drops >30% of raw
+bytes, the raw output is stored losslessly as a `[CTX:tee:<hash8>]`
+artifact — `tkr expand CTX:tee:<hash8>` recovers it exactly.
 
 **JSON-array columnization (v5.8.0):** JSON-array Bash output ≥2KB is
 automatically reshaped into a compact columnar table and a
@@ -371,7 +385,7 @@ When installed as a plugin, tkr registers 21 on-demand skills invocable with `/`
 ## Verify Installation
 
 ```bash
-tkr --version             # expected: tkr v5.8.0 (or latest)
+tkr --version             # expected: tkr v5.9.0 (or latest)
 tkr doctor                # 8-row health check — PASS/WARN/FAIL; exit 0 or 2
 tkr verify                # run built-in filter tests (292 should pass)
 ```
