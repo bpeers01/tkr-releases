@@ -131,11 +131,12 @@ ls               →  tkr ls                (extension-grouped listing)
 grep "pattern"   →  tkr grep "pattern"    (matches grouped by file)
 npm test         →  tkr test npm test     (error-focused output)
 node --test      →  tkr node-test node --test  (TAP-parsed: failures + counts)
+vitest run       →  tkr vitest vitest run  (banner/timing stripped, failures kept)
 cat README.md    →  tkr cat README.md     (line-numbered, binary-safe)
 env              →  tkr env               (capped at 25 lines)
 ```
 
-10 dedicated handlers cover the highest-volume commands. 95 TOML filters
+11 dedicated handlers cover the highest-volume commands. 95 TOML filters
 catch everything else. If tkr doesn't recognize a command, it passes
 through unchanged — no risk, no surprises. `npx` / `pnpm exec` / `bunx` /
 `uv run` wrappers are unwrapped and the inner command re-dispatched
@@ -147,7 +148,9 @@ in `exclude_commands` to opt them out entirely.
 `FAILURES`/`ERRORS` blocks with `E`-line assert detail and strips
 captured-output noise, headers, and progress dots. `node --test` runs
 through a TAP reporter (`tkr node-test`) keeping failure diagnostics
-and counts only. When a failing command's filter drops >30% of raw
+and counts only. `vitest run` (v5.10.0, `tkr vitest`) compresses
+banner/timing noise and keeps failure blocks — 78-92% savings on
+passing runs. When a failing command's filter drops >30% of raw
 bytes, the raw output is stored losslessly as a `[CTX:tee:<hash8>]`
 artifact — `tkr expand CTX:tee:<hash8>` recovers it exactly.
 
