@@ -9,17 +9,17 @@ It works on four fronts at once: compresses bloated tool output before Claude re
 
 Built for Claude Code on **Pro, Max, or Team**. API users get the same wins paid in dollars instead of cap headroom (`tkr gain --economics`). Works on macOS, Linux, and Windows. Single static binary, zero runtime dependencies.
 
-> **What's new in v5.9.0** — Structured test parsers: pytest failures
-> keep their `E`-line assert detail while progress noise is stripped,
-> and a new `tkr node-test` handler runs `node --test` through a TAP
-> reporter keeping only failures + counts. Failed lossy-filtered
-> commands now tee their raw output to the artifact store as
-> `[CTX:tee:<hash8>]` markers — recover the full original with
-> `tkr expand`. The rewrite hook gains a non-invasive `suggest` mode
-> and an `exclude_commands` list, unwraps `npx`/`pnpm exec`/`bunx`/
-> `uv run` wrappers, and self-checks hook-script integrity (red
-> `HOOK!` statusline badge on drift). Plus grep/rg multi-path and
-> statusline parsing fixes. [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
+> **What's new in v5.13.0** — Model-awareness release. The `tkr claude`
+> effort matrix now spans six model columns — Fable 5 and Sonnet 5 join
+> Opus 4.8/4.7, Sonnet 4.6 and Haiku 4.5 — with per-model calibration so
+> the effort recommendation fits the model you're on. The route
+> classifier learns a DowngradeModel recommendation when Opus is burning
+> cap on trivial edits. `tkr top` now shows the PROJECT folder each
+> session is open in plus a `tkr` flag for sessions launched via
+> `tkr claude`, `tkr gain --fan-out` attributes subagent cost, and
+> `tkr audit opus48-migration` checks migration consistency. Plus burn-
+> leaderboard, keepalive-report, and graph-hash fixes.
+> [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
 
 ## Is this for you?
 
@@ -72,10 +72,10 @@ Claude Code, Gemini CLI, and Cursor rewrite commands automatically — no manual
 
 ```bash
 # macOS / Linux / Git Bash
-TKR_VERSION=v5.9.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
+TKR_VERSION=v5.13.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.9.0
+irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.13.0
 ```
 
 #### Manual download
@@ -359,36 +359,42 @@ tkr doctor                # 8-row install/health matrix; exit 0/2 (CI-friendly)
 
 ## Plugin Skills
 
-When installed as a plugin, tkr registers 21 on-demand skills invocable with `/` inside Claude Code:
+When installed as a plugin, tkr registers 8 core on-demand skills invocable with `/` inside Claude Code:
 
 | Skill | What it does |
 |-------|-------------|
 | `/search` | Hybrid BM25 search across project code, docs, and diagrams |
-| `/pd-audit` | Score progressive-disclosure setup — zone gaps, rule waste, eager-import cost |
-| `/delegate` | Route a task to cheap models via the native agentic loop |
 | `/brevity` | Set output verbosity (lite / full / ultra) |
 | `/compress` | Compress a specific tool output inline |
 | `/status` | Plugin health, token savings summary, hook status |
 | `/config` | Configure tkr settings |
 | `/usage` | Per-session cost + model-mix view |
+| `/handoff` | Structured handoff writer (drops to `.tkr/handoffs/<id>-YYYYMMDD-HHMM.md`); includes `/handoff prune` verb for cleaning stale files |
+| `/continue` | Load prior-session carry-over: scans `.tkr/handoffs/*.md` (1 file auto-loads, N prompts), else JSONL fallback. Pairs with `/handoff`. `/resume-coach` kept as 30d alias. |
+
+### Advanced skills (opt-in)
+
+13 more skills ship in `skills-advanced/` inside the plugin bundle but are not registered by default — copy a folder into the deployed plugin's `skills/` directory to enable it:
+
+| Skill | What it does |
+|-------|-------------|
+| `/delegate` | Route a task to cheap models via the agentic loop or shell cascade |
+| `/openrouter-on` / `/openrouter-off` | Toggle OpenRouter routing / restore subscription |
+| `/semantic-on` | Enable semantic tool-output compression |
 | `/ctx-audit` | Classify what's occupying the current context window |
 | `/consumption-report` | Weekly/5h cap-burn report with top offenders |
 | `/consumption-audit` | Drill into which commands drove the burn |
 | `/cache-audit` | Audit cache usage and identify miss patterns |
 | `/cache-footprint` | Measure tkr's own cache load |
-| `/memory-compact` | Score auto-memory files for compaction (stale, redundant, verbose, shipped-marker heuristics) and walk through trim/rewrite |
-| `/semantic-on` | Enable semantic tool-output compression |
-| `/openrouter-on` | Enable OpenRouter routing (alternative to CLI) |
-| `/openrouter-off` | Disable OpenRouter routing and restore subscription |
-| `/handoff` | Structured handoff writer (drops to `.tkr/handoffs/<id>-YYYYMMDD-HHMM.md`); includes `/handoff prune` verb for cleaning stale files |
+| `/pd-audit` | Score progressive-disclosure setup — zone gaps, rule waste, eager-import cost |
+| `/memory-compact` | Score auto-memory files for compaction (stale / redundant / verbose / shipped) and walk through trim/rewrite |
 | `/hotspot` | Identify high-leverage refactor targets via transcript-pattern analysis |
-| `/continue` | Load prior-session carry-over: scans `.tkr/handoffs/*.md` (1 file auto-loads, N prompts), else JSONL fallback. Pairs with `/handoff`. `/resume-coach` kept as 30d alias. |
 | `/explore` | Read-only repo exploration via Task subagent — keeps the main agent's context clean while a child agent maps a subsystem |
 
 ## Verify Installation
 
 ```bash
-tkr --version             # expected: tkr v5.9.0 (or latest)
+tkr --version             # expected: tkr v5.13.0 (or latest)
 tkr doctor                # 8-row health check — PASS/WARN/FAIL; exit 0 or 2
 tkr verify                # run built-in filter tests (292 should pass)
 ```
