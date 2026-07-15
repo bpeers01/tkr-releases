@@ -9,7 +9,13 @@ It works on four fronts at once: compresses bloated tool output before Claude re
 
 Built for Claude Code on **Pro, Max, or Team**. API users get the same wins paid in dollars instead of cap headroom (`tkr gain --economics`). Works on macOS, Linux, and Windows. Single static binary, zero runtime dependencies.
 
-> **What's new in v5.13.0** — Model-awareness release. The `tkr claude`
+> **What's new in v5.13.1** — Grep correctness patch: `grep "a\|b"`-style
+> BRE patterns no longer silently return zero matches through the rewrite
+> layer (they fall through to native grep), `tkr grep` skips
+> `.claude/worktrees/` shadow copies, and the embedded `tkr claude`
+> prompt picks up sharper search/file-writing guidance.
+>
+> **v5.13.0** — Model-awareness release. The `tkr claude`
 > effort matrix now spans six model columns — Fable 5 and Sonnet 5 join
 > Opus 4.8/4.7, Sonnet 4.6 and Haiku 4.5 — with per-model calibration so
 > the effort recommendation fits the model you're on. The route
@@ -72,10 +78,10 @@ Claude Code, Gemini CLI, and Cursor rewrite commands automatically — no manual
 
 ```bash
 # macOS / Linux / Git Bash
-TKR_VERSION=v5.13.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
+TKR_VERSION=v5.13.1 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.13.0
+irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.13.1
 ```
 
 #### Manual download
