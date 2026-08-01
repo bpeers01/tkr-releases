@@ -1,15 +1,21 @@
 #!/bin/sh
 # tkr installer — downloads the latest release binary from GitHub.
-# Supports two modes:
-#   --cli     CLI-only: installs the tkr binary to PATH + shell hook (default)
-#   --plugin  Full plugin: binary + hooks + skills + scripts + adapters for Claude Code
+# Supports three modes (PUBLIC-009 core/advanced split):
+#   --cli              CLI-only: installs the tkr binary to PATH + shell hook (default)
+#   --plugin           Core plugin: binary + hooks + 8 core skills
+#                      (compression + search + brevity + status surfaces)
+#   --plugin-advanced  Everything: core plus the 13 advanced skills
+#                      (delegation, OpenRouter toggles, audits), the
+#                      deprecated shell delegation cascade
+#                      (scripts/delegate.sh, ADR-0023) and adapters/
 #
-# Auto-detection: if neither flag is given, checks whether Claude Code is
-# installed. If found, offers plugin mode; otherwise installs CLI-only.
+# Auto-detection: if no flag is given, checks whether Claude Code is
+# installed. If found, offers core plugin mode; otherwise installs CLI-only.
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
 #   curl -fsSL ... | sh -s -- --plugin
+#   curl -fsSL ... | sh -s -- --plugin-advanced
 #   ./install.sh --plugin
 #   ./install.sh --cli
 #
@@ -33,10 +39,12 @@ SOURCE_REPO="bpeers01/tkr"  # cosign signing identity (private source repo workf
 # --- Parse arguments ---
 
 MODE=""
+TIER="core"
 for arg in "$@"; do
   case "$arg" in
-    --cli)    MODE="cli" ;;
-    --plugin) MODE="plugin" ;;
+    --cli)             MODE="cli" ;;
+    --plugin)          MODE="plugin"; TIER="core" ;;
+    --plugin-advanced) MODE="plugin"; TIER="advanced" ;;
   esac
 done
 
@@ -79,14 +87,18 @@ ARTIFACT="tkr-${GOOS}-${GOARCH}${EXT}"
 
 if [ -z "$MODE" ]; then
   if command -v claude >/dev/null 2>&1; then
-    echo "Claude Code detected. Installing in plugin mode (--cli to skip)."
+    echo "Claude Code detected. Installing core plugin (--cli to skip, --plugin-advanced for everything)."
     MODE="plugin"
   else
     MODE="cli"
   fi
 fi
 
-echo "Install mode: ${MODE}"
+if [ "$MODE" = "plugin" ]; then
+  echo "Install mode: plugin (${TIER} tier)"
+else
+  echo "Install mode: ${MODE}"
+fi
 
 # --- Resolve version ---
 
@@ -275,7 +287,8 @@ if [ "$MODE" = "cli" ]; then
 fi
 
 # ==========================================================================
-# Plugin mode: install hooks, skills, scripts, adapters for Claude Code
+# Plugin mode: install hooks + skills for Claude Code (core tier), plus
+# scripts/adapters/advanced skills when --plugin-advanced (PUBLIC-009)
 # ==========================================================================
 
 # Manual hook wiring — copies hooks and updates Claude Code settings.json
@@ -322,12 +335,21 @@ cleanup_legacy_hooks() {
   local settings_file="$HOME/.claude/settings.json"
   local cleaned=false
 
-  # 1. Remove legacy hook files copied by install_hooks_manually or tkr init -g
+  # 1. Remove legacy hook files copied by install_hooks_manually or tkr init -g.
+  #    Ownership check before rm: these names are generic (session-start.js,
+  #    statusline.sh) and ~/.claude/hooks is a shared directory — a user's own
+  #    hook that merely shares the name must survive. Every file tkr ever
+  #    shipped here contains the string "tkr"; a same-named file without it is
+  #    not ours, so skip it and say so instead of deleting it.
   for f in tkr-rewrite.sh session-start.js user-prompt-submit.js statusline.sh statusline.ps1; do
     if [ -f "$claude_hooks_dir/$f" ]; then
-      rm "$claude_hooks_dir/$f"
-      echo "  Removed legacy hook file: ${f}"
-      cleaned=true
+      if grep -qi "tkr" "$claude_hooks_dir/$f" 2>/dev/null; then
+        rm "$claude_hooks_dir/$f"
+        echo "  Removed legacy hook file: ${f}"
+        cleaned=true
+      else
+        echo "  Skipped ${claude_hooks_dir}/${f} — no tkr marker; looks user-owned, leaving in place."
+      fi
     fi
   done
 
@@ -421,37 +443,87 @@ if [ -n "$SCRIPT_SOURCE" ]; then
   # Running from repo clone — use it directly as plugin root
   echo "Source: local clone at ${SCRIPT_SOURCE}"
   PLUGIN_DIR="$SCRIPT_SOURCE"
+  if [ "$TIER" = "advanced" ]; then
+    # Enable the advanced skills by copying them into the registered
+    # skills/ dir (Claude Code only loads skills/ — skills-advanced/ is
+    # inert by design, PUBLIC-008). Note: this adds untracked copies to
+    # the clone's skills/ dir; `git clean -fd skills/` reverts.
+    if [ -d "$PLUGIN_DIR/skills-advanced" ]; then
+      cp -R "$PLUGIN_DIR"/skills-advanced/. "$PLUGIN_DIR"/skills/
+      echo "Advanced skills enabled (copied skills-advanced/* into skills/ — untracked in the clone)."
+    fi
+  else
+    # Core tier on a dev clone: nothing is deleted from the working tree.
+    # scripts/delegate.sh + adapters/ stay present but are unreferenced by
+    # any core surface (ADR-0023 quarantine); skills-advanced/ never
+    # registers. Warn if a previous advanced enable left copies behind.
+    LEFTOVER=""
+    for d in "$PLUGIN_DIR"/skills-advanced/*/; do
+      [ -d "$d" ] || continue
+      name=$(basename "$d")
+      [ -d "$PLUGIN_DIR/skills/$name" ] && LEFTOVER="$LEFTOVER $name"
+    done
+    if [ -n "$LEFTOVER" ]; then
+      echo "Warning: advanced skills from a previous --plugin-advanced install remain registered:${LEFTOVER}" >&2
+      echo "  Remove them from skills/ (git clean -fd skills/) to run a pure core tier." >&2
+    fi
+  fi
 else
-  # Running from curl-pipe — download plugin bundle from release
-  BUNDLE_URL="https://github.com/${REPO}/releases/download/${TAG}/tkr-plugin.tar.gz"
-  echo "Downloading plugin bundle..."
-  if ! curl -fsSL -o "${WORK_DIR}/tkr-plugin.tar.gz" "$BUNDLE_URL"; then
+  # Running from curl-pipe — download the tier's plugin bundle from the
+  # release. Core: tkr-plugin.tar.gz (.claude-plugin + agents + hooks +
+  # core skills only — scripts/delegate.sh and adapters/ are excluded per
+  # ADR-0023). Advanced: tkr-plugin-advanced.tar.gz (everything, with
+  # advanced skills pre-merged into skills/).
+  BUNDLE_FILE="tkr-plugin.tar.gz"
+  if [ "$TIER" = "advanced" ]; then
+    BUNDLE_FILE="tkr-plugin-advanced.tar.gz"
+  fi
+  BUNDLE_URL="https://github.com/${REPO}/releases/download/${TAG}/${BUNDLE_FILE}"
+  echo "Downloading plugin bundle (${TIER})..."
+  if ! curl -fsSL -o "${WORK_DIR}/${BUNDLE_FILE}" "$BUNDLE_URL"; then
     echo "Error: failed to download plugin bundle from ${BUNDLE_URL}" >&2
     echo "  The plugin bundle may not be available for this release." >&2
+    if [ "$TIER" = "advanced" ]; then
+      echo "  (Releases before the core/advanced split only ship tkr-plugin.tar.gz.)" >&2
+    fi
     echo "  Use --cli for binary-only install, or clone the repo and run ./install.sh --plugin" >&2
     exit 1
   fi
 
-  # Verify plugin bundle checksum (already in checksums.sha256)
-  BUNDLE_EXPECTED=$(grep -F "tkr-plugin.tar.gz" "${WORK_DIR}/checksums.sha256" | head -1 | awk '{print $1}')
-  if [ -n "$BUNDLE_EXPECTED" ]; then
-    if command -v sha256sum >/dev/null 2>&1; then
-      BUNDLE_ACTUAL=$(sha256sum "${WORK_DIR}/tkr-plugin.tar.gz" | awk '{print $1}')
-    elif command -v shasum >/dev/null 2>&1; then
-      BUNDLE_ACTUAL=$(shasum -a 256 "${WORK_DIR}/tkr-plugin.tar.gz" | awk '{print $1}')
-    fi
-    if [ -n "$BUNDLE_ACTUAL" ] && [ "$BUNDLE_ACTUAL" != "$BUNDLE_EXPECTED" ]; then
-      echo "Error: plugin bundle checksum mismatch" >&2
-      echo "  expected: $BUNDLE_EXPECTED" >&2
-      echo "  got:      $BUNDLE_ACTUAL" >&2
-      exit 1
-    fi
-    echo "Plugin bundle checksum verified."
+  # Verify plugin bundle checksum (already in checksums.sha256). Hard-fail on
+  # a missing checksum entry OR a missing sha256 tool — mirror the binary path
+  # so an unverified bundle (session-executing hooks/scripts) is never
+  # extracted (REV-S3).
+  BUNDLE_EXPECTED=$(grep -F "$BUNDLE_FILE" "${WORK_DIR}/checksums.sha256" | head -1 | awk '{print $1}')
+  if [ -z "$BUNDLE_EXPECTED" ]; then
+    echo "Error: no checksum found for ${BUNDLE_FILE} in checksums.sha256" >&2
+    exit 1
   fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    BUNDLE_ACTUAL=$(sha256sum "${WORK_DIR}/${BUNDLE_FILE}" | awk '{print $1}')
+  elif command -v shasum >/dev/null 2>&1; then
+    BUNDLE_ACTUAL=$(shasum -a 256 "${WORK_DIR}/${BUNDLE_FILE}" | awk '{print $1}')
+  else
+    echo "Error: no sha256 checksum tool found (sha256sum or shasum required)" >&2
+    exit 1
+  fi
+  if [ "$BUNDLE_ACTUAL" != "$BUNDLE_EXPECTED" ]; then
+    echo "Error: plugin bundle checksum mismatch" >&2
+    echo "  expected: $BUNDLE_EXPECTED" >&2
+    echo "  got:      $BUNDLE_ACTUAL" >&2
+    exit 1
+  fi
+  echo "Plugin bundle checksum verified."
 
-  # Extract to plugin dir
+  # Extract to plugin dir. Remove the bundle-owned payload dirs first so
+  # a reinstall (or a tier switch, e.g. advanced → core) is authoritative
+  # — stale advanced skills/scripts/adapters from a previous install must
+  # not survive into a core install.
   mkdir -p "$PLUGIN_DIR"
-  tar xzf "${WORK_DIR}/tkr-plugin.tar.gz" -C "$PLUGIN_DIR"
+  for d in .claude-plugin agents hooks skills skills-advanced scripts adapters; do
+    rm -rf "${PLUGIN_DIR:?}/$d"
+  done
+  tar xzf "${WORK_DIR}/${BUNDLE_FILE}" -C "$PLUGIN_DIR"
   chmod +x "$PLUGIN_DIR"/scripts/*.sh "$PLUGIN_DIR"/adapters/*.sh "$PLUGIN_DIR"/hooks/*.sh 2>/dev/null || true
   echo "Plugin files extracted to ${PLUGIN_DIR}"
 fi
@@ -496,16 +568,25 @@ TKR_STATE_DIR="${HOME}/.tkr"
 mkdir -p "${TKR_STATE_DIR}/contracts" "${TKR_STATE_DIR}/delegations" "${TKR_STATE_DIR}/validation"
 echo "Runtime state directory: ${TKR_STATE_DIR}"
 
+# Record the installed tier so `tkr status` can report it (PUBLIC-009).
+printf '%s\n' "$TIER" > "${TKR_STATE_DIR}/plugin-tier"
+echo "Plugin tier recorded: ${TIER} (shown by 'tkr status')"
+
 # --- Done ---
 
 echo ""
-echo "tkr plugin installed successfully."
+echo "tkr plugin installed successfully (${TIER} tier)."
 echo "  Binary:  ${DEST}"
 echo "  Plugin:  ${PLUGIN_DIR}"
 echo "  State:   ${TKR_STATE_DIR}"
 echo ""
 echo "Available skills: /tkr-search, /brevity, /tkr-compress, /tkr-status, /tkr-usage, /tkr-config, /continue, /handoff"
-echo "Advanced skills:  in skills-advanced/ — copy into the plugin's skills/ dir to enable (delegation, audits, OpenRouter)"
+if [ "$TIER" = "advanced" ]; then
+  echo "Advanced skills:  enabled (/delegate, /openrouter-on|off, audits, /memory-compact, ...)"
+  echo "Note:             scripts/delegate.sh (shell cascade) is DEPRECATED — ADR-0023; the delegate MCP tool is the supported path"
+else
+  echo "Advanced tier:    re-run the installer with --plugin-advanced to add delegation, OpenRouter toggles, and the audit skills"
+fi
 echo "MCP tool:         delegate (from any Claude Code session — see docs/delegate-usage.md)"
 echo "                  tkr_graph (structural code intel — who calls X, what breaks if I change Y)"
 echo ""
