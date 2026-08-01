@@ -4,18 +4,25 @@
     tkr installer for Windows — downloads the latest release binary from GitHub.
 
 .DESCRIPTION
-    Supports two modes:
-      -Cli     CLI-only: installs the tkr binary to PATH (default)
-      -Plugin  Full plugin: binary + hooks + skills + scripts + adapters for Claude Code
+    Supports three modes (PUBLIC-009 core/advanced split):
+      -Cli             CLI-only: installs the tkr binary to PATH (default)
+      -Plugin          Core plugin: binary + hooks + 8 core skills
+      -PluginAdvanced  Everything: core plus 13 advanced skills (delegation,
+                       OpenRouter toggles, audits), the deprecated shell
+                       delegation cascade (ADR-0023) and adapters
 
-    Auto-detection: if neither flag is given, checks whether Claude Code is
-    installed. If found, uses plugin mode; otherwise installs CLI-only.
+    Auto-detection: if no flag is given, checks whether Claude Code is
+    installed. If found, uses core plugin mode; otherwise installs CLI-only.
 
 .PARAMETER Cli
     Install CLI binary only (no plugin components).
 
 .PARAMETER Plugin
-    Install full Claude Code plugin (binary + hooks + skills + scripts + adapters).
+    Install the core Claude Code plugin (binary + hooks + core skills).
+
+.PARAMETER PluginAdvanced
+    Install the full Claude Code plugin (core plus advanced skills,
+    delegation scripts, and adapters).
 
 .PARAMETER Version
     Pin a specific version tag (e.g., "v1.12.1"). Default: latest release.
@@ -35,6 +42,7 @@
 param(
     [switch]$Cli,
     [switch]$Plugin,
+    [switch]$PluginAdvanced,
     [string]$Version = $env:TKR_VERSION,
     [string]$InstallDir = $env:TKR_INSTALL_DIR,
     [string]$PluginDir = $env:TKR_PLUGIN_DIR
@@ -48,19 +56,25 @@ $SourceRepo = "bpeers01/tkr"
 # --- Detect mode ---
 
 $Mode = ""
+$Tier = "core"
 if ($Cli) { $Mode = "cli" }
-if ($Plugin) { $Mode = "plugin" }
+if ($Plugin) { $Mode = "plugin"; $Tier = "core" }
+if ($PluginAdvanced) { $Mode = "plugin"; $Tier = "advanced" }
 
 if (-not $Mode) {
     if (Get-Command claude -ErrorAction SilentlyContinue) {
-        Write-Host "Claude Code detected. Installing in plugin mode (-Cli to skip)."
+        Write-Host "Claude Code detected. Installing core plugin (-Cli to skip, -PluginAdvanced for everything)."
         $Mode = "plugin"
     } else {
         $Mode = "cli"
     }
 }
 
-Write-Host "Install mode: $Mode"
+if ($Mode -eq "plugin") {
+    Write-Host "Install mode: plugin ($Tier tier)"
+} else {
+    Write-Host "Install mode: $Mode"
+}
 
 # --- Detect architecture ---
 
@@ -219,7 +233,8 @@ try {
     }
 
     # ======================================================================
-    # Plugin mode: install hooks, skills, scripts, adapters for Claude Code
+    # Plugin mode: install hooks + skills for Claude Code (core tier), plus
+    # scripts/adapters/advanced skills when -PluginAdvanced (PUBLIC-009)
     # ======================================================================
 
     Write-Host ""
@@ -240,33 +255,74 @@ try {
     if ($ScriptSource) {
         Write-Host "Source: local clone at $ScriptSource"
         $PluginDir = $ScriptSource
+        if ($Tier -eq "advanced") {
+            # Enable advanced skills by copying them into the registered
+            # skills/ dir (Claude Code only loads skills/ — PUBLIC-008).
+            # Adds untracked copies to the clone; git clean -fd skills/ reverts.
+            $AdvSkills = Join-Path $PluginDir "skills-advanced"
+            if (Test-Path $AdvSkills) {
+                Copy-Item -Path (Join-Path $AdvSkills "*") -Destination (Join-Path $PluginDir "skills") -Recurse -Force
+                Write-Host "Advanced skills enabled (copied skills-advanced\* into skills\ - untracked in the clone)."
+            }
+        } else {
+            # Core tier on a dev clone: nothing is deleted from the working
+            # tree (ADR-0023 quarantined files stay but are unreferenced).
+            # Warn if a previous advanced enable left copies registered.
+            $AdvSkills = Join-Path $PluginDir "skills-advanced"
+            if (Test-Path $AdvSkills) {
+                $Leftover = Get-ChildItem $AdvSkills -Directory | Where-Object {
+                    Test-Path (Join-Path $PluginDir "skills\$($_.Name)")
+                } | ForEach-Object { $_.Name }
+                if ($Leftover) {
+                    Write-Host "Warning: advanced skills from a previous -PluginAdvanced install remain registered: $($Leftover -join ', ')" -ForegroundColor Yellow
+                    Write-Host "  Remove them from skills\ (git clean -fd skills/) to run a pure core tier." -ForegroundColor Yellow
+                }
+            }
+        }
     } else {
-        # Download plugin bundle from release
-        $BundleUrl = "$BaseUrl/tkr-plugin.tar.gz"
-        $BundlePath = Join-Path $TempDir "tkr-plugin.tar.gz"
+        # Download the tier's plugin bundle from the release. Core:
+        # tkr-plugin.tar.gz (.claude-plugin + hooks + core skills only —
+        # scripts\delegate.sh and adapters\ excluded per ADR-0023).
+        # Advanced: tkr-plugin-advanced.tar.gz (everything, advanced
+        # skills pre-merged into skills\).
+        $BundleFile = "tkr-plugin.tar.gz"
+        if ($Tier -eq "advanced") { $BundleFile = "tkr-plugin-advanced.tar.gz" }
+        $BundleUrl = "$BaseUrl/$BundleFile"
+        $BundlePath = Join-Path $TempDir $BundleFile
 
-        Write-Host "Downloading plugin bundle..."
+        Write-Host "Downloading plugin bundle ($Tier)..."
         try {
             Invoke-WebRequest -Uri $BundleUrl -OutFile $BundlePath -UseBasicParsing
         } catch {
-            Write-Error "Failed to download plugin bundle from $BundleUrl`nThe plugin bundle may not be available for this release.`nUse -Cli for binary-only install, or clone the repo and run .\install.ps1 -Plugin"
+            $AdvNote = if ($Tier -eq "advanced") { "`n(Releases before the core/advanced split only ship tkr-plugin.tar.gz.)" } else { "" }
+            Write-Error "Failed to download plugin bundle from $BundleUrl`nThe plugin bundle may not be available for this release.$AdvNote`nUse -Cli for binary-only install, or clone the repo and run .\install.ps1 -Plugin"
             exit 1
         }
 
-        # Verify plugin bundle checksum
-        $BundleExpectedLine = Get-Content $ChecksumPath | Where-Object { $_ -match "tkr-plugin.tar.gz" }
-        if ($BundleExpectedLine) {
-            $BundleExpected = ($BundleExpectedLine -split '\s+')[0]
-            $BundleActual = (Get-FileHash -Path $BundlePath -Algorithm SHA256).Hash.ToLower()
-            if ($BundleActual -ne $BundleExpected) {
-                Write-Error "Plugin bundle checksum mismatch`n  expected: $BundleExpected`n  got:      $BundleActual"
-                exit 1
-            }
-            Write-Host "Plugin bundle checksum verified."
+        # Verify plugin bundle checksum. Hard-fail on a missing entry — mirror
+        # the binary path so an unverified bundle (session-executing hooks and
+        # scripts) is never extracted (REV-S3).
+        $BundleExpectedLine = Get-Content $ChecksumPath | Where-Object { $_ -match [regex]::Escape($BundleFile) }
+        if (-not $BundleExpectedLine) {
+            Write-Error "No checksum found for $BundleFile in checksums.sha256"
+            exit 1
         }
+        $BundleExpected = ($BundleExpectedLine -split '\s+')[0]
+        $BundleActual = (Get-FileHash -Path $BundlePath -Algorithm SHA256).Hash.ToLower()
+        if ($BundleActual -ne $BundleExpected) {
+            Write-Error "Plugin bundle checksum mismatch`n  expected: $BundleExpected`n  got:      $BundleActual"
+            exit 1
+        }
+        Write-Host "Plugin bundle checksum verified."
 
-        # Extract to plugin dir
+        # Extract to plugin dir. Remove bundle-owned payload dirs first so
+        # a reinstall or tier switch (advanced -> core) is authoritative —
+        # stale advanced skills/scripts/adapters must not survive.
         New-Item -ItemType Directory -Path $PluginDir -Force | Out-Null
+        foreach ($d in @(".claude-plugin", "agents", "hooks", "skills", "skills-advanced", "scripts", "adapters")) {
+            $p = Join-Path $PluginDir $d
+            if (Test-Path $p) { Remove-Item $p -Recurse -Force }
+        }
         tar xzf $BundlePath -C $PluginDir
         Write-Host "Plugin files extracted to $PluginDir"
     }
@@ -292,8 +348,15 @@ try {
             foreach ($LegacyFile in $LegacyFiles) {
                 $LegacyPath = Join-Path $ClaudeHooksDir $LegacyFile
                 if (Test-Path $LegacyPath) {
-                    Remove-Item $LegacyPath -Force
-                    Write-Host "  Removed legacy hook file: $LegacyFile"
+                    # Ownership check: these names are generic and the hooks dir is
+                    # shared — only delete files that carry a tkr marker; a
+                    # same-named file without one is user-owned, leave it.
+                    if (Select-String -Path $LegacyPath -Pattern "tkr" -Quiet) {
+                        Remove-Item $LegacyPath -Force
+                        Write-Host "  Removed legacy hook file: $LegacyFile"
+                    } else {
+                        Write-Host "  Skipped $LegacyPath — no tkr marker; looks user-owned, leaving in place."
+                    }
                 }
             }
 
@@ -378,16 +441,25 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $TkrStateDir "validation") -Force | Out-Null
     Write-Host "Runtime state directory: $TkrStateDir"
 
+    # Record the installed tier so `tkr status` can report it (PUBLIC-009).
+    Set-Content -Path (Join-Path $TkrStateDir "plugin-tier") -Value $Tier -Encoding ascii
+    Write-Host "Plugin tier recorded: $Tier (shown by 'tkr status')"
+
     # --- Done ---
 
     Write-Host ""
-    Write-Host "tkr plugin installed successfully."
+    Write-Host "tkr plugin installed successfully ($Tier tier)."
     Write-Host "  Binary:  $Dest"
     Write-Host "  Plugin:  $PluginDir"
     Write-Host "  State:   $TkrStateDir"
     Write-Host ""
     Write-Host "Available skills: /tkr-search, /brevity, /tkr-compress, /tkr-status, /tkr-usage, /tkr-config, /continue, /handoff"
-    Write-Host "Advanced skills:  in skills-advanced/ - copy into the plugin's skills/ dir to enable (delegation, audits, OpenRouter)"
+    if ($Tier -eq "advanced") {
+        Write-Host "Advanced skills:  enabled (/delegate, /openrouter-on|off, audits, /memory-compact, ...)"
+        Write-Host "Note:             scripts/delegate.sh (shell cascade) is DEPRECATED - ADR-0023; the delegate MCP tool is the supported path"
+    } else {
+        Write-Host "Advanced tier:    re-run the installer with -PluginAdvanced to add delegation, OpenRouter toggles, and the audit skills"
+    }
     Write-Host "MCP tool:         delegate (from any Claude Code session - see docs/delegate-usage.md)"
     Write-Host "                  tkr_graph (structural code intel - who calls X, what breaks if I change Y)"
     Write-Host ""
