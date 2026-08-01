@@ -7,9 +7,21 @@
 
 It works on four fronts at once: compresses bloated tool output before Claude reads it, collapses grep+read chains into one search, routes overflow work to cheap models when Opus is under pressure, and trims response verbosity. Same workflow, more Opus per week — no plan upgrade required.
 
-Built for Claude Code on **Pro, Max, or Team**. API users get the same wins paid in dollars instead of cap headroom (`tkr gain --economics`). Works on macOS, Linux, and Windows. Single static binary, zero runtime dependencies.
+Built for Claude Code on **Pro, Max, or Team**. API users get the same wins paid in dollars instead of cap headroom (`tkr gain --economics`). Binaries ship every release for macOS, Linux, and Windows; automated release-validation smoke testing currently covers Linux and Windows only (see Requirements). Single static binary, zero runtime dependencies.
 
-> **What's new in v5.13.1** — Grep correctness patch: `grep "a\|b"`-style
+> **What's new in v5.14.0** — Native work routing arrives as an
+> **experimental, default-off** feature: tkr can recommend that a
+> bounded task run on a cheaper packaged Claude worker instead of the
+> main session, gated behind explicit opt-in modes (off by default;
+> the most permissive mode remains unimplemented and refused). A new
+> `tkr route eval` harness compares routing on vs. off on a bounded
+> task corpus; its first live run confirmed the core plumbing against
+> a real Claude Code binary (worker spawn/stop delivery is not yet
+> live-confirmed) and made **no savings or effectiveness claim** —
+> routing remains under evaluation.
+> [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
+>
+> **v5.13.1** — Grep correctness patch: `grep "a\|b"`-style
 > BRE patterns no longer silently return zero matches through the rewrite
 > layer (they fall through to native grep), `tkr grep` skips
 > `.claude/worktrees/` shadow copies, and the embedded `tkr claude`
@@ -38,11 +50,13 @@ Yes, if any of these sound familiar:
 
 You'll get the most out of tkr on the **Pro / Max / Team subscription** doing real day-job development — multiple sessions, long contexts, agentic tasks. That's where the weekly Opus cap bites hardest and where saved tokens turn directly into more Opus time.
 
+**Not for you if:** you rarely approach the weekly cap (tkr's wins scale with tool-output volume — light sessions see little change); your burn is dominated by model prose rather than tool output (output tokens are ~2% of cap burn, and tkr doesn't claim them); or you need every byte of tool output verbatim by default (filters are lossy by design — `TKR_LOSSLESS=1` (TOML-pipeline commands only) and `CTX:tee` artifacts are the escape hatches, but then tkr isn't saving you much).
+
 ## Install
 
 ### Full Plugin (recommended for Claude Code users)
 
-The complete token-efficiency suite — binary, hooks, skills, search, delegation, brevity:
+The core token-efficiency suite — binary, hooks, compression, search, brevity:
 
 ```bash
 # macOS, Linux, or Windows (Git Bash)
@@ -52,7 +66,7 @@ curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.
 irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex
 ```
 
-The installer auto-detects Claude Code and installs plugin mode by default. Add `-- --cli` to install the binary only.
+The installer auto-detects Claude Code and installs the **core** plugin tier by default. Add `-- --cli` to install the binary only, or `-- --plugin-advanced` (`-PluginAdvanced` on PowerShell) for the advanced tier: delegation, OpenRouter toggles, and the audit skills. `tkr status` shows the active tier.
 
 ### Activate hook integration
 
@@ -111,18 +125,31 @@ sha256sum -c checksums.sha256
 
 </details>
 
+### Launch through `tkr claude` (recommended)
+
+`tkr claude` starts Claude Code with tkr's replacement system prompt: byte-stable across machines so prompt caching shares the prefix, leaner than the stock prompt it replaces, and carrying the tkr tool playbook (search-first, structural reads, delegation guidance) so no per-project `CLAUDE.md` plumbing is needed.
+
+```bash
+tkr claude                      # launch Claude Code with the tkr prompt
+tkr claude --tkr-show-prompt    # print the materialized prompt path and exit
+tkr claude --tkr-append         # layer on top of the stock prompt instead of replacing it
+tkr claude --tkr-auto-deny      # also deny MCP servers with zero 30-day use
+```
+
+Sessions launched this way are flagged `tkr` in `tkr top` and auto-arm the keepalive watcher on 1h-TTL accounts.
+
 ## How It Works
 
 Four independent levers, working together. You get the combined effect.
 
 | Lever | What it does | Cap headroom recovered |
 |---------|-------------|------------------------|
-| **Compression** | Hooks rewrite commands so output passes through dedicated handlers or TOML filters before Claude reads it | 60–90% per filtered command |
+| **Compression** | Hooks rewrite commands so output passes through dedicated handlers or TOML filters before Claude reads it | median 73% on high-output commands (≥500 raw tok); near 0% on small outputs |
 | **Search** | `tkr search` replaces grep/glob/read cycles with a single BM25 + tree-sitter query | 5–10× fewer context reads |
 | **Delegation** | A native agentic loop routes overflow work to cheap OpenRouter models when `tkr signals` flags burn risk | Preserves Opus quota for complex work |
-| **Brevity** | `/brevity` tightens model prose (lite / full / ultra) | 20–40% output reduction |
+| **Brevity** | `/brevity` tightens model prose (lite / full / ultra) | Denser answers, faster reads — a UX lever (output is ~2% of cap burn), not a savings channel |
 
-Above all four sits a live pressure classifier — `tkr signals` — that fuses rate-limit consumption, cache-miss rate, idle time, and context size into a single routing decision, surfaced on the statusline. `tkr usage burn` runs 16 burn detectors against your session history to pinpoint waste. `tkr report` produces a self-contained HTML snapshot you can share or save. `tkr gain` aggregates savings across all four channels into one number.
+Above all four sits a live pressure classifier — `tkr signals` — that fuses rate-limit consumption, cache-miss rate, idle time, and context size into a single routing decision, surfaced on the statusline. `tkr usage burn` runs 16 burn detectors against your session history to pinpoint waste. `tkr report` produces a self-contained HTML snapshot you can share or save. `tkr gain` aggregates savings across the compression, search, and delegation channels into one number.
 
 ---
 
@@ -142,7 +169,7 @@ cat README.md    →  tkr cat README.md     (line-numbered, binary-safe)
 env              →  tkr env               (capped at 25 lines)
 ```
 
-11 dedicated handlers cover the highest-volume commands. 95 TOML filters
+12 dedicated handlers cover the highest-volume commands. 111 TOML filters
 catch everything else. If tkr doesn't recognize a command, it passes
 through unchanged — no risk, no surprises. `npx` / `pnpm exec` / `bunx` /
 `uv run` wrappers are unwrapped and the inner command re-dispatched
@@ -273,7 +300,9 @@ Beyond the delegation loop, `tkr openrouter on/off` routes Claude Code's own inf
 tkr openrouter on gemma      # google/gemma-4-31b-it across all tiers
 tkr openrouter on qwen       # qwen/qwen3-coder-next
 tkr openrouter on kimi       # moonshotai/kimi-k2.5
-tkr openrouter on deepseek   # deepseek/deepseek-r1-0528
+tkr openrouter on minimax    # minimax/minimax-m2.5
+tkr openrouter on deepseek   # deepseek/deepseek-v3.2
+tkr openrouter on glm        # z-ai/glm-5.1
 tkr openrouter on vendor/model  # any raw OpenRouter slug
 tkr openrouter off           # restore subscription routing
 ```
@@ -314,7 +343,7 @@ Diagnose and tune how Claude Code loads context per project — root `CLAUDE.md`
 
 ```bash
 tkr pd-tree                              # static view: what's eager / lazy / missing
-tkr pd-audit                             # scored snapshot of disclosure health
+# /pd-audit (Claude Code skill, not a CLI command) — scored snapshot of disclosure health
 tkr pd-replay --aggregate                # rank zone gaps and uncovered failures by real activity
 tkr pd-replay --aggregate --scaffold --apply
                                          # write top-N zone CLAUDE.md from templates/zones/
@@ -333,17 +362,17 @@ tkr pd-replay --learn-corrections --apply
 Generate a self-contained HTML snapshot of your Claude Code efficiency. Three modes; `tkr report` with no arguments picks the best one for the data you have.
 
 ```bash
-tkr report                       # auto-select — comprehensive if both datasets exist
+tkr report auto                  # auto-select — comprehensive if both datasets exist
 tkr report install-impact        # before vs. after tkr was installed
 tkr report version-progression   # efficiency per tkr version you've run
 tkr report comprehensive         # everything in one document
-tkr report --open                # write the file and open it in your browser
-tkr report --preview             # print a text summary to stdout, no file
+tkr report install-impact --open     # write the file and open it in your browser (flags are per-mode)
+tkr report install-impact --preview  # print a text summary to stdout, no file
 ```
 
 Reports are redacted by default (project names and paths stable-hashed) so you can share one without leaking your codebase. Pass `--no-redact` (with paired confirm flag) if you want raw labels for your own use. Output lands under `<UserConfigDir>/tkr/reports/`.
 
-What it actually shows: cap-units saved per channel, top burn drivers, before/after side-by-side, version-over-version trend lines, and which detectors flagged what. The v5.1.0 release came with eight ADRs explaining the data model and redaction guarantees — see `docs/decisions/`.
+What it actually shows: cap-units saved per channel, top burn drivers, before/after side-by-side, version-over-version trend lines, and which detectors flagged what. The report data model and redaction guarantees are documented in the release notes.
 
 ---
 
@@ -358,10 +387,32 @@ tkr usage burn            # 16 burn detectors against session history
 tkr signals               # live pressure classification (stay / offer / delegate)
 tkr signals --current     # compact one-line state for model-pull
                           # v5.1.0+ appends ttl=Ns/<source> (config|direct|inferred|default)
-                          # when the prompt-cache TTL has been detected — ADR-0009
+                          # when the prompt-cache TTL has been detected
 tkr status                # alias for `tkr signals --current`
-tkr doctor                # 8-row install/health matrix; exit 0/2 (CI-friendly)
+tkr top                   # live monitor of all Claude Code sessions (--wide for cost columns)
+tkr doctor                # install/health matrix (PASS/WARN/FAIL); exit 0/2 (CI-friendly)
 ```
+
+## What tkr Itself Costs
+
+A token reducer has to earn back more than it spends. tkr's overhead,
+by channel:
+
+- **Hooks** run outside the model and cost context only for what they
+  return — compression *replaces* tool output, the statusline costs
+  zero, and advisory lines are delta-gated: the pressure state line
+  appears only when a threshold band changes, and effort-routing
+  verdicts stay on the statusline, entering context at most once per
+  sustained mismatch per session.
+- **Skill descriptions** cost ~25 tokens each in the session
+  inventory; manual-only skills cost nothing until you invoke them.
+- **The `tkr claude` system prompt** is smaller than the stock prompt
+  it replaces and byte-stable across sessions, so prompt caching
+  keeps it cheap.
+
+Measure your own install any time: `/cache-footprint` reports tkr's
+hook-injection overhead in tokens, and `/ctx-audit` scores your whole
+startup payload.
 
 ## Plugin Skills
 
@@ -380,7 +431,7 @@ When installed as a plugin, tkr registers 8 core on-demand skills invocable with
 
 ### Advanced skills (opt-in)
 
-13 more skills ship in `skills-advanced/` inside the plugin bundle but are not registered by default — copy a folder into the deployed plugin's `skills/` directory to enable it:
+13 more skills ship in the **advanced** install tier — install with `install.sh --plugin-advanced` (or `install.ps1 -PluginAdvanced`) to register them. The default `--plugin` install is the core tier and does not include them (nor the deprecated shell delegation cascade — the `delegate` MCP tool is the supported delegation path). `tkr status` shows which tier is active:
 
 | Skill | What it does |
 |-------|-------------|
@@ -400,16 +451,20 @@ When installed as a plugin, tkr registers 8 core on-demand skills invocable with
 ## Verify Installation
 
 ```bash
-tkr --version             # expected: tkr v5.13.0 (or latest)
-tkr doctor                # 8-row health check — PASS/WARN/FAIL; exit 0 or 2
-tkr verify                # run built-in filter tests (292 should pass)
+tkr --version             # expected: tkr v5.13.1 (or newer)
+tkr doctor                # health check — PASS/WARN/FAIL rows; exit 0 or 2
+tkr verify                # run built-in filter tests (341 should pass)
 ```
 
 Plugin status: `/status` skill inside Claude Code.
 
 ## Requirements
 
-- **macOS**: 10.15+ (Intel or Apple Silicon)
+- **macOS**: 10.15+ (Intel or Apple Silicon) — binaries are built,
+  checksummed, and cosign-signed every release; the automated
+  release-validation smoke suite (INTEG-001) does not yet run on
+  macOS, unlike Windows and Linux, so treat macOS as less
+  release-tested until that gap closes
 - **Linux**: x86_64, glibc 2.17+
 - **Windows**: 10+ ([Git Bash](https://git-scm.com/downloads) or PowerShell 5.1+)
 - No runtime dependencies — tkr is a single static binary
@@ -417,7 +472,7 @@ Plugin status: `/status` skill inside Claude Code.
 
 ## Troubleshooting
 
-See [TROUBLESHOOTING.md](https://github.com/bpeers01/tkr/blob/main/docs/TROUBLESHOOTING.md) for common issues:
+See [TROUBLESHOOTING.md](https://github.com/bpeers01/tkr-releases/blob/main/TROUBLESHOOTING.md) for common issues:
 
 - Hook / PATH setup
 - MCP server not appearing in `claude mcp list`
@@ -425,12 +480,16 @@ See [TROUBLESHOOTING.md](https://github.com/bpeers01/tkr/blob/main/docs/TROUBLES
 - Version mismatch after upgrade
 - Statusline shows the wrong pressure / mode
 
+## Security
+
+Please do not report vulnerabilities through public issues. Use GitHub private vulnerability reporting: <https://github.com/bpeers01/tkr-releases/security/advisories/new>. See [SECURITY.md](SECURITY.md) for scope and response expectations.
+
 ## Support
 
-Found a bug or have a feature request? [Open an issue](https://github.com/bpeers01/tkr-releases/issues/new/choose).
+Found a bug or have a feature request? [Open an issue](https://github.com/bpeers01/tkr-releases/issues/new/choose). For suspected security issues, use the private reporting channel above instead.
 
 This is the public binary distribution repo. Source code is maintained privately; this repo hosts release binaries, install scripts, and the issue tracker.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE). The tkr name and logo are trademarks of the maintainer and are not covered by the MIT license; forks should use a different name.
