@@ -9,7 +9,22 @@ It works on four fronts at once: compresses bloated tool output before Claude re
 
 Built for Claude Code on **Pro, Max, or Team**. API users get the same wins paid in dollars instead of cap headroom (`tkr gain --economics`). Binaries ship every release for macOS, Linux, and Windows; automated release-validation smoke testing currently covers Linux and Windows only (see Requirements). Single static binary, zero runtime dependencies.
 
-> **What's new in v5.14.0** — Native work routing arrives as an
+> **What's new in v5.15.0** — tkr can now be installed straight from the
+> Claude Code plugin marketplace: `/plugin marketplace add
+> bpeers01/tkr-releases`, then `/plugin install tkr` — the binary
+> downloads and verifies itself on first use, no separate curl step
+> required. `tkr grep` results are now annotated with the enclosing
+> function or class, so a match can answer the question without a
+> follow-up file read, and flags it doesn't recognize fall through to
+> your system's own grep instead of refusing. Plus a cluster of
+> reliability fixes: `tkr top` no longer shows a blank MODEL column or
+> scrolls the screen instead of redrawing in place on Windows, and the
+> 1h-TTL keepalive watcher had several silent-failure modes fixed —
+> including a handoff-writing path that had gone dark since mid-July
+> while the cache-refresh path kept working.
+> [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
+>
+> **v5.14.0** — Native work routing arrives as an
 > **experimental, default-off** feature: tkr can recommend that a
 > bounded task run on a cheaper packaged Claude worker instead of the
 > main session, gated behind explicit opt-in modes (off by default;
@@ -54,7 +69,21 @@ You'll get the most out of tkr on the **Pro / Max / Team subscription** doing re
 
 ## Install
 
-### Full Plugin (recommended for Claude Code users)
+### Claude Code Marketplace (simplest)
+
+```
+/plugin marketplace add bpeers01/tkr-releases
+/plugin install tkr
+```
+
+No separate binary download — the plugin's launcher fetches and
+verifies the matching platform binary the first time it runs. This
+installs the **core** tier (hooks, compression, search, brevity). The
+advanced tier (delegation, OpenRouter toggles, audit skills) isn't on
+the marketplace yet — use the curl/PowerShell installer below with
+`-- --plugin-advanced` for that.
+
+### Full Plugin (curl / PowerShell)
 
 The core token-efficiency suite — binary, hooks, compression, search, brevity:
 
@@ -92,10 +121,10 @@ Claude Code, Gemini CLI, and Cursor rewrite commands automatically — no manual
 
 ```bash
 # macOS / Linux / Git Bash
-TKR_VERSION=v5.13.1 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
+TKR_VERSION=v5.15.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.13.1
+irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.15.0
 ```
 
 #### Manual download
@@ -451,7 +480,7 @@ When installed as a plugin, tkr registers 8 core on-demand skills invocable with
 ## Verify Installation
 
 ```bash
-tkr --version             # expected: tkr v5.13.1 (or newer)
+tkr --version             # expected: tkr v5.15.0 (or newer)
 tkr doctor                # health check — PASS/WARN/FAIL rows; exit 0 or 2
 tkr verify                # run built-in filter tests (341 should pass)
 ```
