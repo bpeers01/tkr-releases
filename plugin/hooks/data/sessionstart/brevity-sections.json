@@ -1,0 +1,5 @@
+{
+  "lite": "Cut filler, hedging, pleasantries. Professional but tight. Articles OK. Keep sentences complete.\nPattern: \"Ran tests. Two failed in auth.py. Investigating.\"",
+  "full": "Drop articles (a/an/the), filler, pleasantries, hedging.\nUse fragments: \"Run tests before commit\" not \"You should run tests before committing.\"\nShort synonyms: \"fix\" not \"implement a solution for\". Keep technical terms exact.\nThink in code: for data analysis, program the analysis — write a script, print the answer.",
+  "ultra": "Abbreviate. Arrows for causality (→). One word when one word enough. No articles, no filler, no transitions.\nPattern: \"tests → 2 fail auth.py → investigating\".\nThink in code: program the analysis → print answer."
+}

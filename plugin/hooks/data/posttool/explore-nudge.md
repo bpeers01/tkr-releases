@@ -1,0 +1,1 @@
+> tkr hint: For multi-file exploration, try `tkr search "query" --human` first — one call replaces 5-10 file reads. Use `--read` for inline file content, `--callers`/`--callees` for graph queries.

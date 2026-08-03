@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "tkr",
+  "description": "Token Reducer — unified token efficiency plugin for Claude Code",
+  "owner": {
+    "name": "Brantley Peers"
+  },
+  "plugins": [
+    {
+      "name": "tkr",
+      "description": "Token Reducer — tool output compression, semantic search, capacity-aware delegation, and output brevity. 60-90% token savings.",
+      "category": "development",
+      "source": "./",
+      "homepage": "https://github.com/bpeers01/tkr-releases"
+    }
+  ]
+}
