@@ -1456,3 +1456,39 @@ test("regression INV-039: payload sid beats stale env sid in spawned hook", () =
     try { fs.rmSync(stateDir, { recursive: true, force: true }); } catch {}
   }
 });
+
+// Issue #123: `tkr top`'s real EFFORT column reads effort-<sid>.json, which
+// must refresh on every turn (not just SessionStart) so a mid-session
+// /effort change is visible to a process with no view into this session's
+// live env vars. Spawns the real hook so runMain's persistSessionEffort
+// call is exercised end to end.
+test("runMain refreshes effort-<sid>.json every turn from the live env", () => {
+  const { spawnSync } = require("node:child_process");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-effort-turn-"));
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-effort-turn-state-"));
+  try {
+    const sid = "sid-effort-turn";
+    const effortPath = path.join(stateDir, `effort-${sid}.json`);
+    fs.writeFileSync(effortPath, JSON.stringify({ effort: "low", source: "stale", ts: "2020-01-01T00:00:00Z" }));
+
+    const env = { ...process.env, TMPDIR: tmp, TKR_STATE_DIR: stateDir, CLAUDE_CODE_EFFORT_LEVEL: "xhigh" };
+    env.TKR_ROUTE_DISABLED = "1";
+    delete env.TKR_STATUSLINE_PATH;
+    delete env.TKR_SESSION_ID;
+
+    const res = spawnSync(process.execPath, [path.join(__dirname, "user-prompt-submit.js")], {
+      input: JSON.stringify({ prompt: "hello", session_id: sid }),
+      env,
+      cwd: tmp,
+      encoding: "utf8",
+    });
+    assert.strictEqual(res.status, 0, `hook exited nonzero: ${res.stderr}`);
+
+    const parsed = JSON.parse(fs.readFileSync(effortPath, "utf8"));
+    assert.strictEqual(parsed.effort, "xhigh", "mid-session env effort must overwrite the stale snapshot");
+    assert.strictEqual(parsed.source, "CLAUDE_CODE_EFFORT_LEVEL");
+  } finally {
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
+    try { fs.rmSync(stateDir, { recursive: true, force: true }); } catch {}
+  }
+});

@@ -25,6 +25,10 @@ const path = require("path");
 
 const ITER = Number(process.env.BENCH_ITER) || 30;
 const BUDGET_MS = Number(process.env.BENCH_BUDGET_MS) || 100;
+// Bash hooks pay a bash startup on top of every external spawn, so they
+// get their own (looser) budget. Their load-independent regression signal
+// is the forks column, not the latency.
+const BASH_BUDGET_MS = Number(process.env.BENCH_BASH_BUDGET_MS) || 500;
 const ENFORCE = process.env.BENCH_ENFORCE === "1";
 
 const HOOKS_DIR = path.join(__dirname, "..");
@@ -61,6 +65,100 @@ function benchHook(label, hookFile, payload, env) {
     p50: percentile(times, 50),
     p95: percentile(times, 95),
     max: times[times.length - 1],
+  };
+}
+
+// ── Bash hooks (issue #129 item 3) ──────────────────────────────────────
+//
+// The activity-touch fork storm (#129) shipped because no bench ever
+// counted a bash hook's process spawns: ~9 forks per prompt looked free
+// on Linux and cost 4–6s EACH under loaded-Windows spawn degradation.
+// So bash hooks report FORK COUNT alongside latency — fork count is the
+// load-independent number; latency is environment-dependent.
+//
+// Fork counting: a PATH-shim directory where common external commands
+// are wrapped to append one byte to a log, then exec the real binary.
+// Counts external-command spawns (the dominant Windows cost). NOT
+// counted: subshell forks of pure builtins, externals missing from
+// SHIM_COMMANDS, and commands exec'd via absolute path (they bypass
+// PATH — e.g. a resolve-python.sh result). Treat the count as a floor.
+// The count run is separate from the latency runs — the shim doubles
+// each spawn, so its timings are discarded.
+//
+// watcher.sh is deliberately absent: it is a long-running poller
+// (Stop + asyncRewake), so per-invocation latency is meaningless.
+
+const SHIM_COMMANDS = [
+  "date", "sed", "tr", "cat", "mkdir", "rm", "rmdir", "sleep", "mv", "cp",
+  "python", "python3", "py", "grep", "cut", "head", "tail", "wc", "uname",
+  "find", "touch", "dirname", "basename", "stat", "jq", "git", "curl",
+  "node", "tkr",
+];
+
+function findBash() {
+  const probe = spawnSync("bash", ["-c", "exit 0"]);
+  return probe.error ? null : "bash";
+}
+
+function makeShimDir(root, realPath) {
+  const shimDir = path.join(root, "fork-shims");
+  fs.mkdirSync(shimDir, { recursive: true });
+  for (const cmd of SHIM_COMMANDS) {
+    const shim = path.join(shimDir, cmd);
+    fs.writeFileSync(
+      shim,
+      `#!/bin/bash\n` +
+        `printf . >> "$TKR_BENCH_FORK_LOG"\n` +
+        `PATH="$TKR_BENCH_REAL_PATH" exec ${cmd} "$@"\n`
+    );
+    fs.chmodSync(shim, 0o755);
+  }
+  return shimDir;
+}
+
+function benchBashHook(bash, label, hookFile, payload, env, shimDir, forkLog) {
+  const input = JSON.stringify(payload);
+  const hookPath = path.join(HOOKS_DIR, hookFile);
+  const times = [];
+  // stdout/stderr ignored (not piped): statusline.sh backgrounds a
+  // fire-and-forget subprocess that inherits stdio, and spawnSync would
+  // otherwise wait for the grandchild to close the pipe.
+  const stdio = ["pipe", "ignore", "ignore"];
+  for (let i = 0; i < ITER; i++) {
+    const t0 = process.hrtime.bigint();
+    const res = spawnSync(bash, [hookPath], { input, env, stdio, timeout: 30_000 });
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    if (res.error) {
+      console.error(`${label}: spawn error: ${res.error.message}`);
+      return null;
+    }
+    times.push(ms);
+  }
+  times.sort((a, b) => a - b);
+
+  // Separate single run with the shim PATH prepended, for the fork count.
+  let forks = -1;
+  try {
+    fs.writeFileSync(forkLog, "");
+    const shimEnv = {
+      ...env,
+      PATH: `${shimDir}${path.delimiter}${env.PATH || ""}`,
+      TKR_BENCH_FORK_LOG: forkLog,
+      TKR_BENCH_REAL_PATH: env.PATH || "",
+    };
+    const res = spawnSync(bash, [hookPath], { input, env: shimEnv, stdio, timeout: 30_000 });
+    if (!res.error) forks = fs.statSync(forkLog).size;
+  } catch {
+    // fork count stays -1 (reported as "?")
+  }
+
+  return {
+    label,
+    min: times[0],
+    p50: percentile(times, 50),
+    p95: percentile(times, 95),
+    max: times[times.length - 1],
+    forks,
   };
 }
 
@@ -145,15 +243,44 @@ function main() {
     }, env),
   ].filter(Boolean);
 
-  console.log(`e2e hook latency — ${ITER} spawns each (includes node startup, budget ${BUDGET_MS}ms p95)`);
-  console.log("hook                     min      p50      p95      max");
+  // Bash hooks (issue #129 item 3) — latency + fork count.
+  const bash = findBash();
+  if (bash) {
+    const shimDir = makeShimDir(dir, env.PATH || "");
+    const forkLog = path.join(dir, "fork-count");
+    // Realistic CC spawn: no TKR_SESSION_ID env, so resolve-sid.sh takes
+    // the payload-parse path (the python spawn) — the fork-heavy branch
+    // that actually runs in production.
+    const bashEnv = { ...env };
+    delete bashEnv.TKR_SESSION_ID;
+    runs.push(
+      benchBashHook(bash, "keepalive/cleanup [sh]", "keepalive/cleanup.sh", {
+        session_id: SID,
+        cwd: process.cwd(),
+      }, bashEnv, shimDir, forkLog),
+      benchBashHook(bash, "statusline [sh]", "statusline.sh", {
+        session_id: SID,
+        transcript_path: path.join(dir, `${SID}.jsonl`),
+        cwd: process.cwd(),
+        model: { id: "claude-opus-4-6", display_name: "Opus 4.6" },
+      }, bashEnv, shimDir, forkLog),
+    );
+  } else {
+    console.log("bash not found — bash hook scenarios skipped");
+  }
+  const finalRuns = runs.filter(Boolean);
+
+  console.log(`e2e hook latency — ${ITER} spawns each (includes interpreter startup; budget ${BUDGET_MS}ms p95, bash ${BASH_BUDGET_MS}ms p95)`);
+  console.log("hook                       min      p50      p95      max  forks");
   let failed = false;
-  for (const r of runs) {
-    const flag = r.p95 > BUDGET_MS ? "  << OVER BUDGET" : "";
-    if (r.p95 > BUDGET_MS) failed = true;
+  for (const r of finalRuns) {
+    const budget = r.forks === undefined ? BUDGET_MS : BASH_BUDGET_MS;
+    const flag = r.p95 > budget ? "  << OVER BUDGET" : "";
+    if (r.p95 > budget) failed = true;
+    const forks = r.forks === undefined ? "" : `  ${r.forks < 0 ? "?" : r.forks}`.padStart(5);
     console.log(
-      `${r.label.padEnd(22)} ${r.min.toFixed(1).padStart(6)}ms ${r.p50.toFixed(1).padStart(6)}ms ` +
-      `${r.p95.toFixed(1).padStart(6)}ms ${r.max.toFixed(1).padStart(6)}ms${flag}`
+      `${r.label.padEnd(24)} ${r.min.toFixed(1).padStart(6)}ms ${r.p50.toFixed(1).padStart(6)}ms ` +
+      `${r.p95.toFixed(1).padStart(6)}ms ${r.max.toFixed(1).padStart(6)}ms${forks}${flag}`
     );
   }
 

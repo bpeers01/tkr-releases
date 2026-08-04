@@ -72,24 +72,35 @@ function logSessionEffort(sid, input, env = process.env) {
 // persistSessionEffort — write the detected effort to a per-session
 // state file (effort-<sid>.json) that user-prompt-submit's
 // detectActiveEffort reads as its fallback when the effort env vars are
-// absent in the hook environment. Unlike session-effort.jsonl (append-
-// only telemetry, never read on the hot path), this file closes the
-// active-effort loop for the shape nudge (ADR-0010 addendum). When no
-// effort is detectable the file is removed so a stale value from a
+// absent in the hook environment, and that `tkr top` (issue #123) reads
+// as the session's actual EFFORT column, distinct from the route
+// classifier's per-prompt recommendation. Unlike session-effort.jsonl
+// (append-only telemetry, never read on the hot path), this file closes
+// the active-effort loop for the shape nudge (ADR-0010 addendum). When
+// no effort is detectable the file is removed so a stale value from a
 // prior launch of the same session id can't masquerade as current.
+//
+// Called from SessionStart AND every UserPromptSubmit (not just
+// SessionStart) so a mid-session /effort change reaches `tkr top` on the
+// next turn rather than only at session launch — `tkr top` runs as a
+// separate process with no visibility into this session's live env vars,
+// so this file is its only channel.
 function persistSessionEffort(sid, input, env = process.env) {
   try {
     if (!sid) return;
     const dir = stateDir();
     const target = path.join(dir, `effort-${sid}.json`);
-    const effort = detectEffortFromInput(input) || detectEffort(env).effort;
+    const inputEffort = detectEffortFromInput(input);
+    const envEffort = detectEffort(env);
+    const effort = inputEffort || envEffort.effort;
     if (!effort) {
       try { fs.unlinkSync(target); } catch {}
       return;
     }
+    const source = inputEffort ? "hook_input.effort.level" : envEffort.source;
     fs.mkdirSync(dir, { recursive: true });
     const tmp = `${target}.tmp.${process.pid}`;
-    fs.writeFileSync(tmp, JSON.stringify({ effort: effort, ts: new Date().toISOString() }));
+    fs.writeFileSync(tmp, JSON.stringify({ effort: effort, source: source, ts: new Date().toISOString() }));
     fs.renameSync(tmp, target);
   } catch {
     // best-effort

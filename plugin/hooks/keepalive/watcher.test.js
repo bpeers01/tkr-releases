@@ -157,7 +157,7 @@ test("watcher.sh suppresses a respawned watcher with no activity since last fire
 
 // --- keepalive_effective_activity: transcript activity counts as activity ---
 //
-// Regression (2026-08-02): `activity` is written only by activity-touch.sh on
+// Regression (2026-08-02): `activity` is written only by the activity touch on
 // UserPromptSubmit, so idle was really "seconds since the last user prompt".
 // An agentic turn runs for an hour with no UserPromptSubmit, so a session that
 // was flat-out working looked abandoned and the watcher fired mid-task

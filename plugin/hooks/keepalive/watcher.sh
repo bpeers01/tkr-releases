@@ -9,7 +9,8 @@
 #
 # Single-fire-per-idle-window: a `fired-at` marker prevents respawned
 # watchers from firing again until the next real UserPromptSubmit clears
-# the marker (handled by activity-touch.sh).
+# the marker (handled by the activity touch in user-prompt-submit.js —
+# hooks/lib/keepalive-activity.js).
 #
 # INV-063 fire gate: a respawned watcher no longer just checks whether
 # `fired-at` exists — it compares last-activity against last-fired
@@ -223,7 +224,7 @@ while true; do
   DECISION="$(keepalive_idle_decision "$ACTIVITY_AT" "$NOW" "$IDLE_THRESHOLD_SEC")"
 
   # RESEED: no usable activity timestamp (never seeded, or a resume desynced
-  # activity-touch.sh from this watcher's session dir). Re-seed to now and
+  # the activity touch from this watcher's session dir). Re-seed to now and
   # wait rather than firing on a bogus ~epoch idle. WAIT: still active.
   if [ "$DECISION" = "RESEED" ]; then
     echo "$NOW" > "$DIR/activity" 2>/dev/null || true
@@ -242,7 +243,7 @@ while true; do
     # project already fired and no genuine prompt followed, this idle
     # window is already spent — suppress instead of double-firing.
     # Prompt-only signals on both sides (the project files are written
-    # only by activity-touch's genuine-prompt path and by fires), so the
+    # only by the activity touch's genuine-prompt path and by fires), so the
     # wake's own transcript append cannot re-open this gate — same rule
     # as the per-sid INV-063 gate.
     if [ -n "$PROJ_DIR" ]; then

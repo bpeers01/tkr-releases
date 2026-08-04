@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # hooks/keepalive/resolve-sid.sh — shared SID resolver for keepalive
-# bash hooks (activity-touch, watcher, cleanup).
+# bash hooks (watcher, cleanup; activity-touch moved to JS — see
+# hooks/lib/keepalive-activity.js, issue #129).
 #
 # Source this file from a keepalive hook to populate KEEPALIVE_SID and
 # KEEPALIVE_PAYLOAD_CWD (the CC payload's `cwd`, "" when unavailable —

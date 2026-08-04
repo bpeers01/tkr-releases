@@ -38,6 +38,16 @@ test("falls back to env detection when input carries no effort", () => {
     persistSessionEffort("sid-b", {}, { CLAUDE_CODE_EFFORT_LEVEL: "low" });
     const parsed = JSON.parse(fs.readFileSync(path.join(tmp, "effort-sid-b.json"), "utf8"));
     assert.strictEqual(parsed.effort, "low");
+    assert.strictEqual(parsed.source, "CLAUDE_CODE_EFFORT_LEVEL");
+  });
+});
+
+test("records hook_input.effort.level as the source when input wins", () => {
+  withStateDir((tmp) => {
+    persistSessionEffort("sid-e", { effort: { level: "high" } }, {});
+    const parsed = JSON.parse(fs.readFileSync(path.join(tmp, "effort-sid-e.json"), "utf8"));
+    assert.strictEqual(parsed.source, "hook_input.effort.level");
+    assert.ok(parsed.ts, "ts must be stamped");
   });
 });
 

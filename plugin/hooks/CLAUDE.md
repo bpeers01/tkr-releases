@@ -15,7 +15,7 @@ InstructionsLoaded).
 | `session-start.js` | SessionStart | Brevity reinforcement + tkr awareness banner |
 | `pre-compact.js` | PreCompact | Snapshot session + nudge `/clear` over `/compact` |
 | `memory-health.js` | Stop | Memory file rotation, dedup, staleness check |
-| `user-prompt-submit.js` | UserPromptSubmit | Reinforce brevity mode on every prompt |
+| `user-prompt-submit.js` | UserPromptSubmit | Reinforce brevity mode on every prompt; keepalive activity touch (`lib/keepalive-activity.js`, folded in from the former bash `activity-touch.sh` — issue #129) |
 | `instructions-loaded.js` | InstructionsLoaded | Telemetry to `~/.tkr/instructions-load.jsonl` |
 | `cache-bust-warn.js` | PreToolUse(Edit\|Write) | Warn before editing prefix-cache-critical files (PlaybookV2 L5) |
 | `long-runner-warn.js` | PreToolUse(Bash) | Warn on watch/serve/follow commands that outlive the cache TTL (L4) |
@@ -23,7 +23,7 @@ InstructionsLoaded).
 | `subagent-outcome.js` | SubagentStop | Bounded outcome row per observed subagent stop → `subagent-outcomes.jsonl`. Records `completion:"stopped"`, never "completed" — the payload carries no status. Schema v2 also parses the worker's fenced `tkr-handoff` trailer into optional `declared_*` fields: a claim channel, not a verification one — `verification` stays `"not_observed"` on every row. Does not join; `tkr route stats` does that at read time |
 | `session-summary.js` | Stop | End-of-session value report + statusline payload cleanup |
 | `team-push.js` | SessionEnd | Debounced team telemetry push (opt-in; `TKR_TEAM_DISABLE=1`) |
-| `keepalive/*.sh` | UserPromptSubmit / Stop / SessionEnd | Keepalive v2: activity signal, async-rewake watcher, cleanup |
+| `keepalive/*.sh` | Stop / SessionEnd | Keepalive v2: async-rewake watcher, cleanup (activity signal moved to `user-prompt-submit.js`; `resolve-project.sh` key must stay byte-identical to `lib/keepalive-activity.js`) |
 | `statusline.{sh,ps1}` | (statusLine) | Pressure indicators in prompt box |
 
 ## Hook contract

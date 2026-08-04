@@ -31,7 +31,8 @@ keepalive_idle_decision() {
 # keepalive_effective_activity <marker_raw> <transcript_mtime_raw>
 # Echoes the later of the two timestamps (non-numeric/empty → 0).
 #
-# Why this exists: `activity` is written ONLY by activity-touch.sh on
+# Why this exists: `activity` is written ONLY by the activity touch
+# (hooks/lib/keepalive-activity.js, run by user-prompt-submit.js) on
 # UserPromptSubmit, so idle was really "seconds since the last user
 # prompt". An agentic turn — subagents, long tool chains, a workflow —
 # runs for an hour without a single UserPromptSubmit, so a session that
@@ -50,7 +51,8 @@ keepalive_idle_decision() {
 # The wake's own continuation turn appends to the transcript, so feeding
 # this into keepalive_fire_gate would make activity > fired_at on every
 # cycle and re-arm the watcher forever — the 18-21 fires per overnight
-# session bug described in activity-touch.sh. The gate must keep using the
+# session bug described in hooks/lib/keepalive-activity.js (INV-024).
+# The gate must keep using the
 # raw UserPromptSubmit marker, which only a human can advance.
 keepalive_effective_activity() {
   local marker="$1" mtime="$2"

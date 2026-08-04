@@ -26,6 +26,8 @@ const { getTelemetryPath } = require("./lib/statusline-path");
 const { stateDir } = require("./lib/state-dir");
 const slashMarker = require("./lib/slash-marker");
 const { getSessionID } = require("./lib/session-id");
+const { activityTouch } = require("./lib/keepalive-activity");
+const { persistSessionEffort } = require("./lib/sessionstart/effort-log");
 
 const TKR_STATE_DIR = stateDir();
 
@@ -1678,6 +1680,21 @@ function runMain(input) {
 
     // Fire-and-forget: record prompt event for session continuity (PLAN-5).
     spawnRecordPromptEvent(input, earlySid);
+
+    // Issue #123: refresh the standing active-effort snapshot every turn,
+    // not just at SessionStart (session-start.js also calls this). `tkr
+    // top` runs as a separate process with no view into this session's
+    // live env vars, so a mid-session /effort change only reaches it via
+    // this file being rewritten on the next prompt. Best-effort — already
+    // wrapped internally, never throws.
+    persistSessionEffort(earlySid, data);
+
+    // Keepalive activity touch (issue #129) — folded in from the former
+    // hooks/keepalive/activity-touch.sh, whose ~9 process spawns per
+    // prompt timed out the whole UserPromptSubmit group under Windows
+    // multi-session load. MUST stay above the brevity early-returns:
+    // a /brevity turn is genuine user activity too. Best-effort.
+    activityTouch({ rawInput: input, data, sid: earlySid });
 
     // Tombstone the work-route receipt for THIS prompt, before any branch
     // below can return.

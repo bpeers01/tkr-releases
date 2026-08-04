@@ -43,7 +43,8 @@
 #                                  direct-invocation callers).
 #   2. fired-at state gate       — $STATE_DIR/keepalive/<sid>/fired-at
 #                                  present ⇒ keepalive; absent ⇒ manual.
-#                                  Mechanical: activity-touch.sh deletes
+#                                  Mechanical: the activity touch in
+#                                  user-prompt-submit.js deletes
 #                                  the marker on every genuine user
 #                                  prompt (the wake's own continuation is
 #                                  guarded out), so at write time the
@@ -122,7 +123,8 @@ fi
 # write under sid 137f11f6), so the per-sid fired-at gate above reads
 # `manual` for a genuinely wake-commanded handoff. Project-scoped
 # backstop, same mechanical rule at project level: the watcher stamps
-# keepalive-projects/<key>/last-fired on every fire; activity-touch.sh
+# keepalive-projects/<key>/last-fired on every fire; the activity touch
+# (hooks/lib/keepalive-activity.js, run by user-prompt-submit.js)
 # stamps last-activity on every genuine prompt. last-fired >=
 # last-activity at write time ⇒ a fire happened in this project and no
 # real prompt followed ⇒ this write is wake-commanded. Recorded as

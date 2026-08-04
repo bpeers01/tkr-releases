@@ -149,7 +149,8 @@ The writer decides provenance itself — **do not pass `--source` from
 this skill**. Mechanical rule: if
 `$TKR_STATE_DIR/keepalive/<sid>/fired-at` exists at write time, the
 handoff is `keepalive` (a fire happened and no genuine user prompt has
-arrived since — `activity-touch.sh` deletes the marker on every real
+arrived since — the activity touch in `user-prompt-submit.js`
+(`hooks/lib/keepalive-activity.js`) deletes the marker on every real
 prompt); otherwise `manual`; sid unresolved → `unknown`. The
 `--source keepalive|manual` flag exists as an explicit override for
 tests and future direct-invocation callers only. A model-passed flag

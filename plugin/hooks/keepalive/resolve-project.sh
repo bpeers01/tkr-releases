@@ -6,9 +6,12 @@
 # single-fire, wake provenance) needs a second, project-scoped key. The
 # key deliberately does NOT try to match Claude Code's projects-dir slug —
 # that expectation is exactly what broke KEEP-004. It only has to be
-# SELF-CONSISTENT across its three writers/readers (activity-touch.sh,
-# watcher.sh, skills/handoff/scripts/write-continue-here.sh), which all
-# source this file. Project state lives under
+# SELF-CONSISTENT across its writers/readers: watcher.sh and
+# skills/handoff/scripts/write-continue-here.sh source this file; the
+# UserPromptSubmit activity touch is a byte-exact JS port
+# (hooks/lib/keepalive-activity.js `keepaliveProjectKey`, issue #129) —
+# any change here MUST land there in the same commit; the parity test in
+# hooks/lib/keepalive-activity.test.js drives both over the same inputs. Project state lives under
 # $TKR_STATE_DIR/keepalive-projects/<key>/ — a SIBLING of keepalive/, not
 # inside it, because `tkr keepalive prune-state` treats every dir under
 # keepalive/ as a session id and would reap a `projects/` subdir.
