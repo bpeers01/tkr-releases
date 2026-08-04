@@ -9,7 +9,21 @@ It works on four fronts at once: compresses bloated tool output before Claude re
 
 Built for Claude Code on **Pro, Max, or Team**. API users get the same wins paid in dollars instead of cap headroom (`tkr gain --economics`). Binaries ship every release for macOS, Linux, and Windows; automated release-validation smoke testing currently covers Linux and Windows only (see Requirements). Single static binary, zero runtime dependencies.
 
-> **What's new in v5.15.0** — tkr can now be installed straight from the
+> **What's new in v5.16.0** — `tkr top` gets more honest and more
+> useful: `EFFORT` now shows the session's actual configured effort (a
+> mid-session `/effort` change shows up on the next prompt) while the
+> route recommendation moves to its own `REC_EFF` column, `CU%` is
+> renamed `CU_SHARE` to match what it always measured, and a new
+> `CU/MIN` column surfaces which session is burning capacity right now.
+> Prompt-time hooks got much cheaper on Windows: a bash helper that cost
+> ~9 process spawns per prompt is folded into the existing Node hook —
+> under heavy multi-session load those spawns could blow the hook time
+> budget and silently drop a turn's tkr context. And `tkr top` no longer
+> rescans history on every 2-second refresh (~15x faster with many
+> sessions).
+> [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
+>
+> **v5.15.0** — tkr can now be installed straight from the
 > Claude Code plugin marketplace: `/plugin marketplace add
 > bpeers01/tkr-releases`, then `/plugin install tkr` — the binary
 > downloads and verifies itself on first use, no separate curl step
@@ -480,7 +494,7 @@ When installed as a plugin, tkr registers 8 core on-demand skills invocable with
 ## Verify Installation
 
 ```bash
-tkr --version             # expected: tkr v5.15.0 (or newer)
+tkr --version             # expected: tkr v5.16.0 (or newer)
 tkr doctor                # health check — PASS/WARN/FAIL rows; exit 0 or 2
 tkr verify                # run built-in filter tests (341 should pass)
 ```
