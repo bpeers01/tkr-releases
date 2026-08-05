@@ -371,7 +371,12 @@ cleanup_legacy_hooks() {
   #    Two hook formats exist in the wild:
   #      flat:    {"type":"command","command":"bash .../tkr-rewrite.sh"}
   #      matcher: {"matcher":"Bash","hooks":[{"type":"command","command":"bash .../tkr-rewrite.sh"}]}
+  # Prefer the fork-free native verb when the installed binary supports it
+  # (INV-085); fall back to the bash script for a binary that predates it.
   local statusline_cmd="bash ${PLUGIN_DIR}/hooks/statusline.sh"
+  if [ -x "$DEST" ] && "$DEST" statusline render --help >/dev/null 2>&1; then
+    statusline_cmd="\"${DEST}\" statusline render"
+  fi
   local needs_rewrite=false needs_statusline=false
 
   has_tkr_rewrite='(.hooks.PreToolUse // []) | any(
