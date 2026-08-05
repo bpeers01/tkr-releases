@@ -391,7 +391,17 @@ try {
 
                     # Replace old Shadowlane statusLine with the plugin's own statusline,
                     # or add it if absent — so the badge activates automatically on plugin install.
+                    # Prefer the fork-free native verb when the installed binary supports it
+                    # (INV-085); fall back to the bash script for a binary that predates it.
                     $PluginStatusLineCmd = "bash $($PluginDir -replace '\\', '/')/hooks/statusline.sh"
+                    try {
+                        & $Dest statusline render --help *> $null
+                        if ($LASTEXITCODE -eq 0) {
+                            $PluginStatusLineCmd = "`"$Dest`" statusline render"
+                        }
+                    } catch {
+                        # $Dest predates the verb or invocation failed — keep the bash fallback.
+                    }
                     $CurrentSL = if ($Settings.PSObject.Properties.Name -contains "statusLine") { $Settings.statusLine } else { "" }
                     if ($CurrentSL -eq "" -or $CurrentSL -match "shadowlane") {
                         $Settings | Add-Member -NotePropertyName "statusLine" -NotePropertyValue $PluginStatusLineCmd -Force
