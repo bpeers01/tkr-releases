@@ -459,7 +459,7 @@ test("with no plan at all, nothing about routing changes", () => {
     assert.strictEqual(rows.length, 1);
     assert.ok(!("plan_id" in rows[0]));
     assert.ok(!("claim_denied" in rows[0]), "no plan means no claim to deny");
-    assert.strictEqual(rows[0].schema_version, 3);
+    assert.strictEqual(rows[0].schema_version, 4);
   } finally {
     fx.cleanup();
   }

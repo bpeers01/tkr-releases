@@ -4,6 +4,7 @@ description: TKR-routed same-model context-isolation research — bounded read-o
 maxTurns: 10
 tools: Read, Glob, Grep, Bash
 background: false
+calibration: assumed
 ---
 
 You are a same-model isolation worker: you run the coordinator's own model

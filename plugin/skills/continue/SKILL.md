@@ -28,6 +28,14 @@ prior skill name.
 ## Skill arguments
 
 - `/continue` — discover automatically (see decision tree below)
+- `/continue <path>` — explicit handoff file, e.g.
+  `/continue .tkr/handoffs/v5160-shipped-121-closed-20260804-0357.md`.
+  Recognized as a path (not a prefix) when the argument contains `/`
+  or ends in `.md`. Resolve relative to repo root; if it doesn't
+  already start with `.tkr/handoffs/`, join it under that dir before
+  checking existence. Skip discovery/glob/age-gating entirely — go
+  straight to FILE PATH. If the resolved file doesn't exist, say so
+  and stop; do not silently fall back to JSONL or prefix-match.
 - `/continue <prefix>` — glob `.tkr/handoffs/<prefix>*.md`; 1 match
   loads, 0 falls to JSONL, many lists with preview
 - `/continue --jsonl` — force JSONL fallback (skip on-disk handoffs)
@@ -35,6 +43,9 @@ prior skill name.
 ## Decision tree
 
 ```
+explicit path arg (contains "/" or ends ".md")?
+└── yes → FILE PATH on that file (skip freshness gating, see above)
+
 .tkr/handoffs/*.md present?
 ├── 1 file fresh (<24h)  → FILE PATH (auto-load, ~1-2K tok)
 ├── 1 file stale (24h-3d)→ FILE PATH + stale warning

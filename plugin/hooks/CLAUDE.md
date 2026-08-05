@@ -9,8 +9,9 @@ InstructionsLoaded).
 | Hook file | Event | Purpose |
 |-----------|-------|---------|
 | `tkr-rewrite.js` | PreToolUse(Bash) | Rewrite raw bash → `tkr <cmd>` for filtering |
-| `agent-search-inject.js` | PreToolUse(Agent) | Auto-inject `tkr search` into Agent prompts; opt-in autoroute (COMPETE-002): downgrade Explore spawns to haiku on classifier `delegate_via` verdict; work routing (native-work-routing §13): record planned-vs-actual on every spawn, and at `mode = "assisted"` fill a compatible Agent call from the current work plan |
-| `post-tool-call.js` | PostToolUse | Compress Bash output via TOML filter pipeline |
+| `agent-search-inject.js` | PreToolUse(Agent) | Auto-inject `tkr search` into Agent prompts; opt-in autoroute (COMPETE-002): downgrade Explore spawns to haiku on classifier `delegate_via` verdict; work routing (native-work-routing §13): record planned-vs-actual on every spawn, and at `mode = "assisted"` fill a compatible Agent call from the current work plan; spawn-time veto (ADR-0033): for `tkr:*` types only, ask `tkr route veto-check` whether the profile's own contract forbids this spawn and block it in an enforcing mode. Fails open in every direction — unreachable binary, non-zero exit, unparseable JSON all read as allow — because a stuck denial is worse than an unenforced one |
+| `post-tool-call.js` | PostToolUse | Compress Bash output via TOML filter pipeline; on Agent/Task events also append one agent-completion row (#134 R0.1, `lib/agent-completions.js`) |
+| `post-tool-batch.js` | PostToolBatch | One first-batch row per prompt classifying the coordinator's first successful action (#134 R0.2). Event exists on CC ≥2.1.x (verified against the 2.1.221 binary; payload `tool_calls`); older builds never fire it and the read side must report that as "unavailable", never as inactivity |
 | `cli-corrections-injector.js` | PostToolUse(Bash) | Inject cli-corrections on Bash failure (PD-7) |
 | `session-start.js` | SessionStart | Brevity reinforcement + tkr awareness banner |
 | `pre-compact.js` | PreCompact | Snapshot session + nudge `/clear` over `/compact` |
@@ -31,7 +32,13 @@ InstructionsLoaded).
 - **Stdin** — JSON payload from Claude Code; schema per event type
   (https://code.claude.com/docs/en/hooks)
 - **Stdout** — JSON response. `{}` proceeds. PreToolUse/PreCompact may
-  return `{"decision":"block","reason":"..."}`. PostToolUse may return
+  return `{"decision":"block","reason":"..."}`. A blocking PreToolUse
+  should carry BOTH that older top-level form and the newer
+  `hookSpecificOutput.permissionDecision:"deny"` /
+  `permissionDecisionReason` one, for Claude Code version compat — the
+  veto path in `agent-search-inject.js` is the worked example — and no
+  `updatedInput`, since a denied call is never also rewritten.
+  PostToolUse may return
   `{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"..."}}`
   to inject context.
 - **Stderr** — debug only; never relied on for control flow.
@@ -102,12 +109,22 @@ Convention: `~/.tkr/<feature>.{json,jsonl}` (honor `TKR_STATE_DIR` env):
   out — the follow-rate denominator; a plan that stayed silent leaves no
   row). Writers must use `ts`, not `at`: every reader keys on `ts`, so a
   row with `at` has no timestamp as far as any window is concerned.
-- `task-spawns.jsonl` — one row per Agent/Task dispatch (schema v3).
+- `task-spawns.jsonl` — one row per Agent/Task dispatch (schema v4).
   Carries `prompt_id` + `tool_use_id` (lifecycle join anchors, always
   written, empty when Claude Code supplied none) and, when a plan was
   current, planned-vs-requested-vs-emitted routing fields. Never
   "actual" — a later hook or a global subagent-model override can still
-  change what runs.
+  change what runs. v4 adds the spawn-time veto verdict —
+  `veto_checked` / `veto_denied` / `veto_reason` / `veto_would_deny`
+  (ADR-0033) — at the TOP LEVEL, not inside the `plan_id` block: a check
+  runs on `subagent_type` and the kill switch alone, so it can fire, or
+  not run at all, independently of whether a plan was current.
+  All-or-nothing on `veto_checked`, same discipline as `plan_id`. Version
+  bumps stay additive and exist to keep metrics honest, not to gate
+  parsing: absence of `veto_checked` on a v4 row means no check ran (a
+  non-`tkr:*` profile, or the kill switch), which is a fact; absence on a
+  v3-or-earlier row means this writer predated the concept and cannot be
+  read as "not checked". Kill switch: `TKR_WORK_VETO_DISABLED=1`.
 - `subagent-outcomes.jsonl` — one row per observed SubagentStop (schema
   v2). The closing half of the spawn→outcome join. Deliberately excludes
   `last_assistant_message` and `transcript_path`: neither is needed to
@@ -126,6 +143,23 @@ Convention: `~/.tkr/<feature>.{json,jsonl}` (honor `TKR_STATE_DIR` env):
   digits-only counts clamped to 99, a block without `outcome` rejected,
   last block wins. Full contract, including the join precedence and what
   tkr cannot observe: `docs/routing-outcomes.md`.
+- `agent-completions.jsonl` — one row per observed Agent/Task PostToolUse
+  (schema v1, #134 R0.1), written by `lib/agent-completions.js` from
+  inside `post-tool-call.js`. Carries all three anchors
+  (`session_id`, `prompt_id`, `tool_use_id`) plus `agent_id` — the
+  bridge that joins a spawn row to its SubagentStop exactly. Numeric
+  fields (totals, usage) are written only when the payload supplied
+  them; an absent key means "this Claude Code build did not say" and
+  the Go reader (pointer fields) must print "unavailable", never 0.
+  The worker's final content and the Agent prompt are read for the
+  `tkr-handoff` parse and never stored. Kill switch:
+  `TKR_AGENT_COMPLETIONS_DISABLED=1`.
+- `first-batch.jsonl` — one row per prompt (schema v1, #134 R0.2):
+  the first resolved tool batch, classified as `agent_first` /
+  `direct_read_search_first` / `mixed_parallel_batch` / `other` /
+  `unavailable`. Tool names only, never inputs or outputs. Dedup
+  marker `first-batch-<sid>.json` (swept at 24h by session-start.js).
+  Kill switch: `TKR_FIRST_BATCH_DISABLED=1`.
 - `trajectory.json` — cap projection cache
 - `anomaly.json` — burn anomaly cache
 - `hook-timings.jsonl` — hook elapsed_ms per call

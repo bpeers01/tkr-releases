@@ -189,7 +189,7 @@ test("INV-023: ledger row written for every Agent/Task spawn", () => {
     // none of those fields appear — which is itself the v2 contract:
     // absent plan_id on a v2 row means "no plan was current", not
     // "this writer never recorded one".
-    assert.strictEqual(r.schema_version, 3);
+    assert.strictEqual(r.schema_version, 4);
     assert.ok(!("plan_id" in r), "unplanned spawn must not carry routing fields");
     assert.ok(!("route_followed" in r), "unplanned spawn must not claim a follow");
     assert.ok(r.at, "expected ISO timestamp");
@@ -470,6 +470,188 @@ test("autoroute: offer-tier verdict (recommend != delegate) does not fire", () =
     assert.ok(!fs.existsSync(t.decisions), "no decision row on offer tier");
   } finally {
     t.cleanup();
+  }
+});
+
+// ── ADR-0033 Phase 4: spawn-time veto ────────────────────────────────────
+//
+// vetoCheck() spawns the real `tkr` binary by bare name (no TKR_BIN
+// indirection — see cmd/tkr/cmd_route_vetocheck.go's doc comment), so
+// these tests shim it by putting a fake executable named "tkr" first on
+// PATH. POSIX shebang + chmod 0o755, same convention
+// hooks/tkr-rewrite.fastpath.test.js already uses for its own tkr shim —
+// there is no other precedent in this repo. Windows note: without
+// shell:true (which vetoCheck() deliberately does not set, matching the
+// production spawnSync call byte for byte), Node's child_process only
+// auto-resolves a bare command name to .exe/.com, never .cmd/.bat — so
+// this shim mechanism is POSIX-only, exactly like the precedent it
+// copies. CI only runs `node --test` on ubuntu-latest (ci.yml), so this
+// is the authoritative platform for these tests.
+
+function withTkrShim(responseObj) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-veto-shim-"));
+  const shim = path.join(dir, "tkr");
+  fs.writeFileSync(shim, `#!/bin/sh\necho '${JSON.stringify(responseObj)}'\n`);
+  fs.chmodSync(shim, 0o755);
+  return {
+    dir,
+    env: { PATH: dir + path.delimiter + (process.env.PATH || "") },
+    cleanup: () => {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+    },
+  };
+}
+
+// pathWithoutTkr is a PATH that cannot resolve "tkr" anywhere — an empty
+// temp directory, not a filtered copy of the real PATH, so the test does
+// not depend on incidental machine state (a dev build of tkr sitting in
+// this very repo would otherwise still resolve on some platforms).
+function pathWithoutTkr() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-noexist-"));
+  return {
+    env: { PATH: dir },
+    cleanup: () => {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+    },
+  };
+}
+
+function tkrEvent(prompt, extra) {
+  return {
+    tool_name: "Agent",
+    session_id: "veto-sid",
+    tool_input: {
+      subagent_type: "tkr:explore-haiku",
+      prompt,
+      run_in_background: true,
+      ...(extra || {}),
+    },
+  };
+}
+
+const MUTATING_PROMPT = "edit internal/foo.go and rename X to Y";
+
+test("veto: non-tkr subagent_type never invokes the subprocess or carries ledger veto fields", () => {
+  const shim = withTkrShim({ verdict: "deny", reason: "mutation_to_readonly_worker", enforce: true, evaluated: true, mode: "advisory" });
+  const tmp = withTempLedger();
+  try {
+    const res = runHook(
+      {
+        tool_name: "Agent",
+        session_id: "veto-sid-nontkr",
+        tool_input: { subagent_type: "general-purpose", prompt: MUTATING_PROMPT, run_in_background: false },
+      },
+      { ...tmp.env, ...shim.env },
+    );
+    assert.strictEqual(res.status, 0);
+    // Nothing to rewrite (background already false, non-Explore, no work
+    // plan, no autoroute) — output stays empty passthrough, exactly as it
+    // was before this hook knew about veto at all.
+    assert.strictEqual(res.stdout, "", "output must be unchanged from the pre-veto passthrough");
+    const rows = readLedger(tmp.ledger);
+    assert.strictEqual(rows.length, 1);
+    assert.ok(!("veto_checked" in rows[0]), "non-tkr profile must never be evaluated");
+  } finally {
+    shim.cleanup();
+    tmp.cleanup();
+  }
+});
+
+test("veto: TKR_WORK_VETO_DISABLED=1 kill switch — no deny, no veto fields, no subprocess reached", () => {
+  const shim = withTkrShim({ verdict: "deny", reason: "mutation_to_readonly_worker", enforce: true, evaluated: true, mode: "advisory" });
+  const tmp = withTempLedger();
+  try {
+    const res = runHook(tkrEvent(MUTATING_PROMPT), { ...tmp.env, ...shim.env, TKR_WORK_VETO_DISABLED: "1" });
+    assert.strictEqual(res.status, 0);
+    const out = JSON.parse(res.stdout || "{}");
+    assert.ok(!out.decision, "kill switch must never produce a block decision");
+    assert.strictEqual(out.hookSpecificOutput?.updatedInput?.run_in_background, false);
+    const rows = readLedger(tmp.ledger);
+    assert.strictEqual(rows.length, 1);
+    assert.ok(!("veto_checked" in rows[0]), "kill switch means the check never ran at all");
+  } finally {
+    shim.cleanup();
+    tmp.cleanup();
+  }
+});
+
+test("veto: fail-open when the tkr binary is unreachable — spawn proceeds, no deny", () => {
+  const noTkr = pathWithoutTkr();
+  const tmp = withTempLedger();
+  try {
+    const res = runHook(tkrEvent(MUTATING_PROMPT), { ...tmp.env, PATH: noTkr.env.PATH });
+    assert.strictEqual(res.status, 0, `hook itself must still exit 0: ${res.stderr}`);
+    const out = JSON.parse(res.stdout || "{}");
+    assert.ok(!out.decision, "a missing/unreachable binary must never block the spawn");
+    assert.strictEqual(out.hookSpecificOutput?.updatedInput?.run_in_background, false);
+    const rows = readLedger(tmp.ledger);
+    assert.strictEqual(rows.length, 1);
+    assert.ok(!("veto_checked" in rows[0]), "no verdict at all — the check could not run");
+  } finally {
+    noTkr.cleanup();
+    tmp.cleanup();
+  }
+});
+
+test("veto: deny verdict blocks the spawn — decision:block + permissionDecision:deny, no updatedInput; ledger records veto_denied", () => {
+  const shim = withTkrShim({
+    verdict: "deny",
+    reason: "mutation_to_readonly_worker",
+    detail: "profile tkr:explore-haiku is read-only and this task carries mutation intent",
+    enforce: true,
+    evaluated: true,
+    mode: "advisory",
+  });
+  const tmp = withTempLedger();
+  try {
+    const res = runHook(tkrEvent(MUTATING_PROMPT), { ...tmp.env, ...shim.env });
+    assert.strictEqual(res.status, 0, `exit ${res.status}: ${res.stderr}`);
+    const out = JSON.parse(res.stdout);
+    assert.strictEqual(out.decision, "block");
+    assert.strictEqual(out.reason, "profile tkr:explore-haiku is read-only and this task carries mutation intent");
+    assert.strictEqual(out.hookSpecificOutput.hookEventName, "PreToolUse");
+    assert.strictEqual(out.hookSpecificOutput.permissionDecision, "deny");
+    assert.strictEqual(
+      out.hookSpecificOutput.permissionDecisionReason,
+      "profile tkr:explore-haiku is read-only and this task carries mutation intent",
+    );
+    assert.ok(!("updatedInput" in out.hookSpecificOutput), "a deny must never carry updatedInput");
+
+    const rows = readLedger(tmp.ledger);
+    assert.strictEqual(rows.length, 1, "the ledger row must still be written before the deny short-circuit");
+    assert.strictEqual(rows[0].veto_checked, true);
+    assert.strictEqual(rows[0].veto_denied, true);
+    assert.strictEqual(rows[0].veto_reason, "mutation_to_readonly_worker");
+  } finally {
+    shim.cleanup();
+    tmp.cleanup();
+  }
+});
+
+test("veto: observe (would_deny) verdict never blocks — row records veto_would_deny, not veto_denied", () => {
+  const shim = withTkrShim({
+    verdict: "allow",
+    reason: "mutation_to_readonly_worker",
+    enforce: false,
+    would_deny: true,
+    evaluated: true,
+    mode: "observe",
+  });
+  const tmp = withTempLedger();
+  try {
+    const res = runHook(tkrEvent(MUTATING_PROMPT), { ...tmp.env, ...shim.env });
+    assert.strictEqual(res.status, 0);
+    const out = JSON.parse(res.stdout || "{}");
+    assert.ok(!out.decision, "observe must never block the spawn");
+    assert.strictEqual(out.hookSpecificOutput?.updatedInput?.run_in_background, false);
+
+    const rows = readLedger(tmp.ledger);
+    assert.strictEqual(rows[0].veto_checked, true);
+    assert.strictEqual(rows[0].veto_denied, false);
+    assert.strictEqual(rows[0].veto_would_deny, true);
+  } finally {
+    shim.cleanup();
+    tmp.cleanup();
   }
 });
 

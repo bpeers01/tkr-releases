@@ -10,7 +10,7 @@
 // playbook-events.jsonl (L0-L6 playbook layer events): different
 // observability concern, different consumers.
 //
-// Schema (v3):
+// Schema (v4):
 //   {
 //     "at":              "2026-05-20T15:48:45.123Z",
 //     "session_id":      "<uuid>",
@@ -19,7 +19,7 @@
 //     "description":     "<tool_input.description>",
 //     "model":           "" | "opus" | "sonnet" | "haiku",
 //     "background":      false,
-//     "schema_version":  3,
+//     "schema_version":  4,
 //
 //     // Lifecycle join anchors (v3). Both come straight off the
 //     // PreToolUse payload; neither is derived or guessed.
@@ -45,7 +45,17 @@
 //     // coordinator was never told the plan existed.
 //     "profile_followed":  false,
 //     "model_followed":    true,
-//     "route_followed":    false
+//     "route_followed":    false,
+//
+//     // Spawn-time veto (v4, ADR-0033 Phase 4), present only when a veto
+//     // check actually ran — i.e. subagent_type was tkr:* and the kill
+//     // switch was off. SPAWN-LEVEL, not plan-level: a veto can fire (or
+//     // not run at all) independently of whether plan_id is present, so
+//     // it lives at the top level rather than inside the plan_id block.
+//     "veto_checked":     true,
+//     "veto_denied":      false,   // veto.enforce && veto.verdict==="deny"
+//     "veto_reason":      "mutation_to_readonly_worker",  // omitted when ""
+//     "veto_would_deny":  false    // omitted unless true (observe mode)
 //   }
 //
 // "emitted", not "actual": these are what this hook put on the tool call,
@@ -66,8 +76,13 @@
 // writer never recorded one". Averaging those together would silently
 // understate follow rate. Same for prompt_id across v2 and v3 — on a v3
 // row it means Claude Code supplied none, on a v2 row it means this
-// writer never asked. The Go readers decode only the fields they know
-// and ignore the rest, so no reader needs to change in step.
+// writer never asked. Same discipline again for v4: absence of
+// veto_checked on a v4 row means no veto check ran for this spawn (a
+// non-tkr profile, or the kill switch was on) — a fact, not a gap — while
+// absence on a v3-or-earlier row means this writer had not shipped the
+// concept yet and cannot be read as "not checked". The Go readers decode
+// only the fields they know and ignore the rest, so no reader needs to
+// change in step.
 //
 // Best-effort: any write error is swallowed. Hot path lives in
 // hooks/agent-search-inject.js; this module must stay allocation-light.
@@ -77,7 +92,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 function ledgerPath() {
   if (process.env.TKR_TASK_SPAWNS_PATH) return process.env.TKR_TASK_SPAWNS_PATH;
@@ -129,6 +144,24 @@ function emitTaskSpawn(record) {
     prompt_id: String(record.prompt_id || ""),
     tool_use_id: String(record.tool_use_id || ""),
   };
+
+  // Spawn-time veto (v4, ADR-0033 Phase 4). Top level, NOT inside the
+  // plan_id block below: a veto check runs (or doesn't) based on
+  // subagent_type and the kill switch alone, independently of whether a
+  // work plan was current for this spawn. All-or-nothing on
+  // veto_checked, same reasoning as plan_id: a row either says a check
+  // ran and what it found, or it says nothing about veto at all.
+  if (record.veto_checked === true) {
+    row.veto_checked = true;
+    row.veto_denied = record.veto_denied === true;
+    // omitempty in spirit: an empty reason on an allow row is the common
+    // case and would otherwise double the row size for no signal.
+    if (record.veto_reason) row.veto_reason = String(record.veto_reason);
+    // Present only when true — false is the overwhelming majority
+    // (enforcing modes and clean spawns alike) and omitting it keeps
+    // those rows byte-identical to a pre-veto v4 row with no violation.
+    if (record.veto_would_deny === true) row.veto_would_deny = true;
+  }
 
   // Work-routing join (§14.2). All-or-nothing on plan_id: a row either
   // describes a spawn that had a plan, or it says nothing about routing.

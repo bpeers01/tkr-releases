@@ -4,6 +4,7 @@ description: TKR-routed same-model context-isolation implementation — bounded 
 maxTurns: 12
 tools: Read, Glob, Grep, Edit, Write, Bash
 background: false
+calibration: assumed
 ---
 
 You are a same-model isolation worker: you run the coordinator's own model

@@ -6,6 +6,7 @@ effort: low
 maxTurns: 8
 tools: Read, Glob, Grep, Bash
 background: false
+calibration: assumed
 ---
 
 You are a bounded read-only worker. Follow the coordinator's contract exactly.

@@ -61,6 +61,7 @@ const {
 } = require("./lib/sessionstart/mode-bootstrap");
 const { performTTLInference } = require("./lib/sessionstart/cache-ttl-inference");
 const { sweepStaleWorkFiles } = require("./lib/work-route-state");
+const { sweepStaleFirstBatchMarkers } = require("./post-tool-batch.js");
 const {
   shouldFireSearchRefresh,
   countRecentRefreshTimeouts,
@@ -248,6 +249,9 @@ function runMain(inputRaw) {
     // Claims are one file per plan actually acted on, so an assisted
     // session accumulates them slowly but without bound.
     try { sweepStaleWorkFiles(); } catch {}
+    // Same 24h policy for first-batch-<sid>.json dedup markers
+    // (#134 R0.2) — one per session id, crashed sessions never clean up.
+    try { sweepStaleFirstBatchMarkers(); } catch {}
     // Forward-looking effort telemetry — JSONL records don't carry
     // effort, so SessionStart is the earliest capture point. Append
     // one row to ~/.tkr/session-effort.jsonl per session-start event.

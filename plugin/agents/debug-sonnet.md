@@ -6,6 +6,7 @@ effort: high
 maxTurns: 16
 tools: Read, Glob, Grep, Edit, Write, Bash
 background: false
+calibration: assumed
 ---
 
 Start from the supplied repro or failing command. Identify the root cause before

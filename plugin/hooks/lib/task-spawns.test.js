@@ -70,6 +70,94 @@ test("an under-cap ledger is appended, not rotated", () => {
   });
 });
 
+// ── Spawn-time veto fields (v4, ADR-0033 Phase 4) ──────────────────────
+
+test("veto_checked=false (or absent) writes no veto_* fields at all", () => {
+  withLedger((ledger) => {
+    emitTaskSpawn({ session_id: "s1", tool_name: "Agent", subagent_type: "Explore" });
+    const row = readSpawns(ledger)[0];
+    assert.strictEqual(row.schema_version, 4);
+    assert.ok(!("veto_checked" in row), "no check ran; the row must stay silent on veto");
+    assert.ok(!("veto_denied" in row));
+    assert.ok(!("veto_reason" in row));
+    assert.ok(!("veto_would_deny" in row));
+  });
+});
+
+test("veto_checked=true with an allow verdict: checked+denied written, reason/would_deny omitted", () => {
+  withLedger((ledger) => {
+    emitTaskSpawn({
+      session_id: "s1",
+      tool_name: "Agent",
+      subagent_type: "tkr:explore-haiku",
+      veto_checked: true,
+      veto_denied: false,
+      veto_reason: "",
+      veto_would_deny: false,
+    });
+    const row = readSpawns(ledger)[0];
+    assert.strictEqual(row.veto_checked, true);
+    assert.strictEqual(row.veto_denied, false);
+    assert.ok(!("veto_reason" in row), "empty reason on an allow row should not be written");
+    assert.ok(!("veto_would_deny" in row), "false would_deny is the common case and stays omitted");
+  });
+});
+
+test("veto_checked=true with a denial: veto_denied and veto_reason both land", () => {
+  withLedger((ledger) => {
+    emitTaskSpawn({
+      session_id: "s1",
+      tool_name: "Agent",
+      subagent_type: "tkr:explore-haiku",
+      veto_checked: true,
+      veto_denied: true,
+      veto_reason: "mutation_to_readonly_worker",
+    });
+    const row = readSpawns(ledger)[0];
+    assert.strictEqual(row.veto_checked, true);
+    assert.strictEqual(row.veto_denied, true);
+    assert.strictEqual(row.veto_reason, "mutation_to_readonly_worker");
+    assert.ok(!("veto_would_deny" in row));
+  });
+});
+
+test("veto_checked=true with would_deny (observe mode): flag lands, verdict stays allow-shaped", () => {
+  withLedger((ledger) => {
+    emitTaskSpawn({
+      session_id: "s1",
+      tool_name: "Agent",
+      subagent_type: "tkr:explore-haiku",
+      veto_checked: true,
+      veto_denied: false,
+      veto_reason: "mutation_to_readonly_worker",
+      veto_would_deny: true,
+    });
+    const row = readSpawns(ledger)[0];
+    assert.strictEqual(row.veto_denied, false);
+    assert.strictEqual(row.veto_reason, "mutation_to_readonly_worker");
+    assert.strictEqual(row.veto_would_deny, true);
+  });
+});
+
+test("veto fields are top-level, not nested inside the plan_id block", () => {
+  withLedger((ledger) => {
+    emitTaskSpawn({
+      session_id: "s1",
+      tool_name: "Agent",
+      subagent_type: "tkr:explore-haiku",
+      veto_checked: true,
+      veto_denied: true,
+      veto_reason: "cost_ceiling_exceeded",
+      // Deliberately no plan_id — a veto can fire with no work plan
+      // current for this spawn at all.
+    });
+    const row = readSpawns(ledger)[0];
+    assert.ok(!("plan_id" in row), "no plan was current for this spawn");
+    assert.strictEqual(row.veto_checked, true, "veto fields must not depend on plan_id");
+    assert.strictEqual(row.veto_denied, true);
+  });
+});
+
 // The private rotator this module used to own is the reason hooks/CLAUDE.md
 // requires the shared one. If a future edit reintroduces a local copy, the
 // #86 fix silently stops applying here again — so assert the wiring, not

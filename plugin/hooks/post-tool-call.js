@@ -66,6 +66,7 @@ const {
   spawnStatuslineUpdate,
 } = require("./lib/posttool/sideeffects");
 const { maybeSpawnCommitRefresh } = require("./lib/posttool/commit-refresh");
+const { recordAgentCompletion } = require("./lib/agent-completions");
 
 const HOOK_START = Date.now();
 let TIMING_NOTE = "ok";
@@ -168,6 +169,15 @@ function processEvent(event) {
   let pushNudgeWarning = null;
   if (process.env.TKR_PUSH_NUDGE_DISABLED !== "1") {
     pushNudgeWarning = checkPushBoundary(event, sessionID);
+  }
+
+  // #134 R0.1: Agent-completion telemetry. PostToolUse(Agent) is the
+  // only surface that reports what a dispatched worker actually did
+  // (resolved model, tokens, duration, tool count); this ledger row is
+  // the spawn→stop join bridge. Fire-and-forget, never alters the
+  // response, swallows its own failures.
+  if (event.tool_name === "Agent" || event.tool_name === "Task") {
+    recordAgentCompletion(event);
   }
 
   // 2026-05-22 graph-share proposal Item 2: when the user just ran

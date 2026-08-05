@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // tkr PreToolUse hook — Agent tool input rewriter.
 //
-// Three responsibilities:
+// Four responsibilities:
 //   1. (DELEG-INT-001) Force run_in_background=false on every Agent/Task call.
 //      Mechanical anti-stall — replaces the prompt-text contract that LLMs
 //      could ignore. Mirrors free-claude-code's
@@ -13,13 +13,24 @@
 //      the statusline payload, written by `tkr statusline-update`),
 //      mechanically downgrade Explore subagent spawns to haiku. Off by
 //      default — ~/.tkr/config.json {"autoroute":{"enabled":true}}.
+//   4. (ADR-0033, Phase 4) Spawn-time veto: for tkr:* subagent_type
+//      candidates, ask `tkr route veto-check` whether the profile's own
+//      contract forbids this spawn — a mutating task aimed at a read-only
+//      worker, or an explicit model outranking the profile's own tier. In
+//      an enforcing mode (advisory/assisted/managed) a violation blocks
+//      the tool call outright rather than rewriting it. Fail-open
+//      throughout: any transport failure (missing binary, timeout, bad
+//      JSON) reads as allow, never as a stuck denial.
 //
 // All rewrites use PreToolUse hookSpecificOutput.updatedInput, which the
-// existing tkr-rewrite.js hook already proves is mutable.
+// existing tkr-rewrite.js hook already proves is mutable. The veto path is
+// the one exception — a deny response carries no updatedInput, only the
+// block decision (see vetoCheck / the deny branch in handleInput below).
 
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { spawnSync } = require("child_process");
 const { readStdinWithTimeout, hooksDisabled } = require("./lib/stdin-with-timeout");
 const { getSessionID } = require("./lib/session-id");
 const { emitTaskSpawn } = require("./lib/task-spawns");
@@ -74,6 +85,13 @@ function handleInput(input) {
     // parent's turn, not this spawn).
     const work = isSubagentContext(event) ? null : workRoute(sid, toolInput, subagentType);
 
+    // ADR-0033 Phase 4 — spawn-time veto. Resolved before the ledger row,
+    // same reasoning as `work` above: the row needs to carry whether a
+    // check ran and what it found. null means "no verdict" (non-tkr
+    // profile, feature off, or the check itself failed open) and must
+    // never be treated as a denial — only an explicit deny verdict blocks.
+    const veto = vetoCheck(subagentType, toolInput);
+
     // INV-023 P1 — record every Task spawn to ~/.tkr/task-spawns.jsonl.
     // Fire-and-forget; the spawn observation must not gate the rewrite
     // path because rewrite is correctness-critical and ledger is best-
@@ -117,7 +135,36 @@ function handleInput(input) {
         route_objective: work.objective || "",
         model_strategy: work.modelStrategy || "",
       } : {}),
+      // Veto fields are spawn-level, not plan-level: a veto can fire (or
+      // not run at all) independently of whether a work plan was current,
+      // so they sit beside the plan_id block rather than inside it.
+      ...(veto ? {
+        veto_checked: true,
+        veto_denied: veto.enforce === true && veto.verdict === "deny",
+        veto_reason: veto.reason || "",
+        veto_would_deny: veto.would_deny === true,
+      } : {}),
     });
+
+    // A denial blocks the tool call outright — checked AFTER emitTaskSpawn
+    // so the ledger row records the veto regardless of what happens next,
+    // and BEFORE any rewrite logic, since a denied spawn is never rewritten.
+    // Both response forms are carried for Claude Code version compat: the
+    // older top-level decision/reason contract and the newer
+    // hookSpecificOutput.permissionDecision one. No updatedInput on a deny.
+    if (veto && veto.enforce === true && veto.verdict === "deny") {
+      const detail = veto.detail || veto.reason || "";
+      process.stdout.write(JSON.stringify({
+        decision: "block",
+        reason: detail,
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          permissionDecisionReason: detail,
+        },
+      }));
+      return;
+    }
 
     // Always force foreground execution — idempotent, harmless if already false.
     const forceForeground = toolInput.run_in_background !== false;
@@ -172,6 +219,45 @@ function handleInput(input) {
   } catch {
     // Parse error — passthrough
     process.exit(0);
+  }
+}
+
+// vetoCheck asks `tkr route veto-check` whether this spawn violates the
+// named tkr:* profile's own contract (ADR-0033 Phase 4). Returns null for
+// "no verdict, proceed" — a non-tkr subagent_type, the kill switch, or any
+// transport failure — and the parsed route.VetoVerdict object otherwise.
+// null is never treated as a denial; only an explicit {verdict:"deny",
+// enforce:true} object blocks a spawn.
+//
+// Scoped to tkr:* the same way the Go policy scopes itself (veto.go's doc
+// comment): a blueprint:* or built-in agent was chosen for capabilities
+// this policy knows nothing about, so a check that never ran costs nothing
+// and a check that ran and got it wrong would answer a question nobody
+// asked.
+function vetoCheck(subagentType, toolInput) {
+  if (!String(subagentType).startsWith("tkr:")) return null;
+  if (process.env.TKR_WORK_VETO_DISABLED === "1") return null;
+  try {
+    const res = spawnSync("tkr", ["route", "veto-check"], {
+      input: JSON.stringify({
+        subagent_type: subagentType,
+        model: toolInput.model || "",
+        prompt: toolInput.prompt || "",
+      }),
+      encoding: "utf8",
+      timeout: 500,
+      windowsHide: true,
+    });
+    // FAIL OPEN: a missing/hung/watchdog-killed tkr binary, a nonzero
+    // exit, or an empty response must never block a spawn — they are all
+    // "the check did not run", not "the check said no".
+    if (res.error || res.status !== 0 || !res.stdout) return null;
+    const parsed = JSON.parse(res.stdout);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    // Includes a stdout payload that failed to parse as JSON — same
+    // fail-open rule.
+    return null;
   }
 }
 

@@ -6,6 +6,7 @@ effort: medium
 maxTurns: 12
 tools: Read, Glob, Grep, Edit, Write, Bash
 background: false
+calibration: assumed
 ---
 
 Execute only the bounded contract from the coordinator. Do not broaden scope.
