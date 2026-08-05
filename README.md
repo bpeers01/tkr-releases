@@ -9,7 +9,24 @@ It works on four fronts at once: compresses bloated tool output before Claude re
 
 Built for Claude Code on **Pro, Max, or Team**. API users get the same wins paid in dollars instead of cap headroom (`tkr gain --economics`). Binaries ship every release for macOS, Linux, and Windows; automated release-validation smoke testing currently covers Linux and Windows only (see Requirements). Single static binary, zero runtime dependencies.
 
-> **What's new in v5.16.0** — `tkr top` gets more honest and more
+> **What's new in v5.17.0** — Work routing now advises instead of acting.
+> Ask `tkr route advise "<task>"` which bounded worker fits a piece of
+> work and you get the profile grid, the session's posture, and a shape
+> hint; the same answer is offered as a one-line, overridable suggestion
+> as you work. A spawn-time check refuses only the worker calls that are
+> wrong by construction — an edit task handed to a read-only worker, or a
+> model bigger than the profile you named — and it fails open, so a
+> missing or slow check never blocks work. **The default changes from
+> `off` to `advisory`**, so upgrading turns these suggestions on; set
+> `[routing.work] mode = "off"` to keep the old behavior, or
+> `TKR_WORK_ROUTE_DISABLED=1` to disable routing entirely. Savings figures
+> are now priced at what carrying a token actually costs across a session,
+> which is a more honest — and different — number, so don't compare
+> savings across this upgrade. `/continue` also accepts an explicit
+> handoff file path.
+> [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
+>
+> **v5.16.0** — `tkr top` gets more honest and more
 > useful: `EFFORT` now shows the session's actual configured effort (a
 > mid-session `/effort` change shows up on the next prompt) while the
 > route recommendation moves to its own `REC_EFF` column, `CU%` is
@@ -135,10 +152,10 @@ Claude Code, Gemini CLI, and Cursor rewrite commands automatically — no manual
 
 ```bash
 # macOS / Linux / Git Bash
-TKR_VERSION=v5.15.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
+TKR_VERSION=v5.17.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.15.0
+irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.17.0
 ```
 
 #### Manual download
@@ -494,7 +511,7 @@ When installed as a plugin, tkr registers 8 core on-demand skills invocable with
 ## Verify Installation
 
 ```bash
-tkr --version             # expected: tkr v5.16.0 (or newer)
+tkr --version             # expected: tkr v5.17.0 (or newer)
 tkr doctor                # health check — PASS/WARN/FAIL rows; exit 0 or 2
 tkr verify                # run built-in filter tests (341 should pass)
 ```
