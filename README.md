@@ -9,7 +9,27 @@ It works on four fronts at once: compresses bloated tool output before Claude re
 
 Built for Claude Code on **Pro, Max, or Team**. API users get the same wins paid in dollars instead of cap headroom (`tkr gain --economics`). Binaries ship every release for macOS, Linux, and Windows; automated release-validation smoke testing currently covers Linux and Windows only (see Requirements). Single static binary, zero runtime dependencies.
 
-> **What's new in v5.17.0** — Work routing now advises instead of acting.
+> **What's new in v5.18.0** — tkr's per-session hooks stop spawning
+> processes. The statusline and the cache-keepalive watcher used to run as
+> shell scripts that launched a handful of helper programs on every
+> render and every tick; both are now built into the tkr binary and launch
+> nothing. On Windows with many Claude Code sessions open at once, that
+> pile-up made even a bare process start take 4–6 seconds and could push
+> tkr's prompt hook past its time limit, silently dropping the turn's
+> context — that's fixed. The statusline itself looks identical.
+> **Existing installs don't switch over on their own**: the statusline
+> command lives in your own `~/.claude/settings.json`, so re-run the
+> installer after upgrading (the old scripts still ship and keep working
+> until you do). Also fixed: black console windows no longer flash across
+> the desktop on Windows when tkr refreshes its search index or graph in
+> the background. `tkr doctor` now tells you *which* tkr plugin folder
+> Claude Code is actually loading, so an upgrade that landed in the wrong
+> one gets caught instead of looking successful. And phrasing like "don't
+> edit anything" is no longer misread as an edit request when tkr
+> suggests a worker.
+> [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
+>
+> **v5.17.0** — Work routing now advises instead of acting.
 > Ask `tkr route advise "<task>"` which bounded worker fits a piece of
 > work and you get the profile grid, the session's posture, and a shape
 > hint; the same answer is offered as a one-line, overridable suggestion
@@ -152,10 +172,10 @@ Claude Code, Gemini CLI, and Cursor rewrite commands automatically — no manual
 
 ```bash
 # macOS / Linux / Git Bash
-TKR_VERSION=v5.17.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
+TKR_VERSION=v5.18.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.17.0
+irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.18.0
 ```
 
 #### Manual download
@@ -511,7 +531,7 @@ When installed as a plugin, tkr registers 8 core on-demand skills invocable with
 ## Verify Installation
 
 ```bash
-tkr --version             # expected: tkr v5.17.0 (or newer)
+tkr --version             # expected: tkr v5.18.0 (or newer)
 tkr doctor                # health check — PASS/WARN/FAIL rows; exit 0 or 2
 tkr verify                # run built-in filter tests (341 should pass)
 ```
