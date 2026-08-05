@@ -540,8 +540,14 @@ if command -v claude >/dev/null 2>&1; then
   # marketplace/plugin is already registered — they do NOT refresh from a
   # bumped plugin.json. On an existing install we fall through to the
   # `marketplace update` + `plugin update` pair, which re-reads PLUGIN_DIR's
-  # plugin.json and copies the new version into the CC marketplace cache
-  # (~/.claude/plugins/cache/tkr/tkr/<ver>/) + bumps installed_plugins.json.
+  # plugin.json and refreshes the registration (bumping installed_plugins.json
+  # and the CC marketplace cache under ~/.claude/plugins/cache/tkr/tkr/<ver>/).
+  #
+  # PLUGIN_DIR itself is the tree that gets SERVED: `marketplace add
+  # "$PLUGIN_DIR"` creates a directory-type marketplace, so
+  # ${CLAUDE_PLUGIN_ROOT} resolves to PLUGIN_DIR, not to the cache copy.
+  # The cache is bookkeeping here and may lag without breaking anything —
+  # do not treat it as the install target when verifying (INST-006).
   REGISTERED=false
   if claude plugin marketplace add "$PLUGIN_DIR" 2>/dev/null \
      || claude plugin marketplace update tkr 2>/dev/null; then
