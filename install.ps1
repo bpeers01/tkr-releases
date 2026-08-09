@@ -6,7 +6,7 @@
 .DESCRIPTION
     Supports three modes (PUBLIC-009 core/advanced split):
       -Cli             CLI-only: installs the tkr binary to PATH (default)
-      -Plugin          Core plugin: binary + hooks + 8 core skills
+      -Plugin          Core plugin: binary + hooks + 9 core skills
       -PluginAdvanced  Everything: core plus 13 advanced skills (delegation,
                        OpenRouter toggles, audits), the deprecated shell
                        delegation cascade (ADR-0023) and adapters
@@ -394,16 +394,32 @@ try {
                     # Prefer the fork-free native verb when the installed binary supports it
                     # (INV-085); fall back to the bash script for a binary that predates it.
                     $PluginStatusLineCmd = "bash $($PluginDir -replace '\\', '/')/hooks/statusline.sh"
+                    # Values this installer may overwrite. Never widen this to match a
+                    # statusLine the user chose themselves — leave unrecognized values alone.
+                    $LegacyStatusLineRe = "shadowlane"
                     try {
                         & $Dest statusline render --help *> $null
                         if ($LASTEXITCODE -eq 0) {
                             $PluginStatusLineCmd = "`"$Dest`" statusline render"
+                            # INST-007: see install.sh — an existing install already points at
+                            # tkr's own forking bash renderer, matching neither clause, so it
+                            # never upgraded. Adopt it only when the binary serves the verb.
+                            $LegacyStatusLineRe = "shadowlane|hooks[/\\]statusline\.(sh|ps1)"
                         }
                     } catch {
                         # $Dest predates the verb or invocation failed — keep the bash fallback.
                     }
-                    $CurrentSL = if ($Settings.PSObject.Properties.Name -contains "statusLine") { $Settings.statusLine } else { "" }
-                    if ($CurrentSL -eq "" -or $CurrentSL -match "shadowlane") {
+                    # INST-004 parity: .statusLine may be an object, not a string — match on
+                    # the .command field in that case rather than the stringified object.
+                    $CurrentSLRaw = if ($Settings.PSObject.Properties.Name -contains "statusLine") { $Settings.statusLine } else { "" }
+                    $CurrentSL = if ($CurrentSLRaw -is [string]) {
+                        $CurrentSLRaw
+                    } elseif ($null -ne $CurrentSLRaw -and $CurrentSLRaw.PSObject.Properties.Name -contains "command") {
+                        [string]$CurrentSLRaw.command
+                    } else {
+                        ""
+                    }
+                    if ($CurrentSL -eq "" -or $CurrentSL -match $LegacyStatusLineRe) {
                         $Settings | Add-Member -NotePropertyName "statusLine" -NotePropertyValue $PluginStatusLineCmd -Force
                         Write-Host "  Set tkr statusLine in settings.json"
                         $SettingsChanged = $true
