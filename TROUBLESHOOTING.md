@@ -5,10 +5,10 @@
 The doctor command prints a verification table covering the binary,
 graph store, git hooks, PATH, plugin/MCP registration, config
 placement, tracking DB health, trust store, delegate config,
-search-index freshness, and hook collisions (DOCTOR-001 folded the
-scattered audit verbs into sections; each still has a deeper
-standalone command). Most install problems show up here as a clear
-WARN or FAIL row with the fix in the detail column. Examples:
+search-index freshness, hook collisions, and hook execution
+(DOCTOR-001 folded the scattered audit verbs into sections; each still
+has a deeper standalone command). Most install problems show up here as
+a clear WARN or FAIL row with the fix in the detail column. Examples:
 
 - "binary version: binary=X, plugin.json=Y" — reinstall; you have a
   mismatched binary
@@ -23,6 +23,30 @@ WARN or FAIL row with the fix in the detail column. Examples:
 - "search index: stale" — run `tkr search --refresh`
 - "hook collisions: non-tkr PreToolUse/Bash hook(s)" — another tool
   rewrites Bash on the same event; one rewriter's changes will lose
+- "hook execution: N of M registered hook(s) do not run" — a hook
+  crashes before it can act. This is the row to trust when tkr looks
+  installed but does nothing: Claude Code skips a hook that exits
+  non-zero **silently**, so a dead hook is otherwise invisible from
+  every angle — `tkr: installed` prints, every other doctor row passes,
+  and no command is ever rewritten (#164/#167). The detail carries the
+  hook's own error, e.g. `Error: Cannot find module './lib/tkr-bin'`,
+  which usually means a partial install — re-run `tkr init -g`, or
+  reinstall the plugin.
+
+### What "hook execution" does and does not cover
+
+It runs each *registered* hook — the installed copy, not the repo copy
+— with a synthetic payload, and requires exit 0. The probe is inert by
+construction: a throwaway HOME, state dir, and project dir, `$TKR_BIN`
+pointed at a no-op, and the team-push network kill switch set, so it
+cannot touch your real tracking DB, search index, or session state.
+
+Not probed, and named in the row when present: registrations that are
+not `node <script>` (`tkr keepalive watch`, the SessionEnd
+`bash cleanup.sh` shim), node entry points outside `hooks/`
+(`bin/tkr-launcher.js --ensure` is an installer), and hooks that are
+not tkr's. `TKR_HOOKS_DISABLED=1` turns the row into a WARN rather than
+a false PASS — the hooks are off, so nothing was proven about them.
 
 Doctor from outside a project shows several WARN rows by design — it
 is checking your binary install, not per-project state. Check the
