@@ -9,7 +9,40 @@ It works on four fronts at once: compresses bloated tool output before Claude re
 
 Built for Claude Code on **Pro, Max, or Team**. API users get the same wins paid in dollars instead of cap headroom (`tkr gain --economics`). Binaries ship every release for macOS, Linux, and Windows; automated release-validation smoke testing currently covers Linux and Windows only (see Requirements). Single static binary, zero runtime dependencies.
 
-> **What's new in v5.18.0** — tkr's per-session hooks stop spawning
+> **What's new in v5.19.0** — tkr stops treating a high percentage as an
+> emergency when you still have plenty of runway. Being 85% through your
+> weekly budget means something very different with eleven hours left in
+> the window than with six days left, and tkr now reads the ratio rather
+> than the number — so it stops nagging you to wrap up and hand off while
+> you still have room to work. The statusline shows that ratio next to the
+> percentage. **Claude itself will behave a little differently the first
+> time you launch it after upgrading**, because the guidance it reads was
+> updated to match; set `TKR_PACE_ADJUST_DISABLED=1` if you want the old
+> percentage-only behaviour.
+> Three real bugs are fixed. tkr's own background commands could, in the
+> wrong conditions, stage deletions in a different Git repository than the
+> one it meant to look at — if you ever saw a pile of unexpected staged
+> deletions appear, that was this, and `git reset` (never `git reset
+> --hard`) recovers it. If you installed tkr manually rather than as a
+> plugin, output compression was silently doing nothing at all: a required
+> file was missing, the hook died on startup, and both the installer and
+> `tkr doctor` still reported success. And the idle-session keepalive could
+> wake a session while a question was waiting on your screen, throwing away
+> the answer you were about to give.
+> `tkr doctor` now actually runs each hook instead of just checking it is
+> registered — the check that would have caught the compression bug
+> immediately. Also new: tkr asks before loading a skill whose bundled
+> reference files would dump more than 25,000 tokens into context,
+> `tkr top` sorts sessions that need you to the top and reports real idle
+> times, and clearing a session right after writing a handoff now loads
+> that handoff for you instead of telling you to run `/continue`. New
+> `/rehydrate` goes a step further: after a `/clear` it rebuilds the
+> previous session's actual conversation from its transcript — every
+> message and command, with the bulky tool output dropped — so you can
+> pick up what you were *doing* rather than reading a summary of it.
+> [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
+>
+> **v5.18.0** — tkr's per-session hooks stop spawning
 > processes. The statusline and the cache-keepalive watcher used to run as
 > shell scripts that launched a handful of helper programs on every
 > render and every tick; both are now built into the tkr binary and launch
@@ -172,10 +205,10 @@ Claude Code, Gemini CLI, and Cursor rewrite commands automatically — no manual
 
 ```bash
 # macOS / Linux / Git Bash
-TKR_VERSION=v5.18.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
+TKR_VERSION=v5.19.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.18.0
+irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.19.0
 ```
 
 #### Manual download
@@ -413,7 +446,7 @@ tkr keepalive watcher-state        # current session: idle seconds, threshold, f
 tkr keepalive prune-state          # remove orphan ~/.tkr/keepalive/<sid>/ dirs
 ```
 
-The statusline shows watcher state as `keepalive:watching | armed | fired@HH:MM | stale | off`. Disable entirely with `TKR_KEEPALIVE_DISABLE=1`; tune the threshold via `TKR_KEEPALIVE_IDLE_MIN=N`.
+The statusline shows watcher state as `keepalive:watching | armed | fired@HH:MM | stale | off`. Tune the threshold via `TKR_KEEPALIVE_IDLE_MIN=N`. Note that `TKR_KEEPALIVE_DISABLE=1` is narrower than its name suggests — it suppresses one activity signal, not the watcher itself; use `TKR_HOOKS_DISABLED=1` to turn the whole hook surface off.
 
 ---
 
@@ -496,7 +529,7 @@ startup payload.
 
 ## Plugin Skills
 
-When installed as a plugin, tkr registers 8 core on-demand skills invocable with `/` inside Claude Code:
+When installed as a plugin, tkr registers 9 core on-demand skills invocable with `/` inside Claude Code:
 
 | Skill | What it does |
 |-------|-------------|
@@ -508,6 +541,7 @@ When installed as a plugin, tkr registers 8 core on-demand skills invocable with
 | `/usage` | Per-session cost + model-mix view |
 | `/handoff` | Structured handoff writer (drops to `.tkr/handoffs/<id>-YYYYMMDD-HHMM.md`); includes `/handoff prune` verb for cleaning stale files |
 | `/continue` | Load prior-session carry-over: scans `.tkr/handoffs/*.md` (1 file auto-loads, N prompts), else JSONL fallback. Pairs with `/handoff`. `/resume-coach` kept as 30d alias. |
+| `/rehydrate` | Rebuild a prior session's thread from its transcript after `/clear` — verbatim conversation + commands, tool output dropped (91–93% smaller). Tier 2 of the read side, between `/continue` and a full resume. |
 
 ### Advanced skills (opt-in)
 
@@ -531,7 +565,7 @@ When installed as a plugin, tkr registers 8 core on-demand skills invocable with
 ## Verify Installation
 
 ```bash
-tkr --version             # expected: tkr v5.18.0 (or newer)
+tkr --version             # expected: tkr v5.19.0 (or newer)
 tkr doctor                # health check — PASS/WARN/FAIL rows; exit 0 or 2
 tkr verify                # run built-in filter tests (341 should pass)
 ```
