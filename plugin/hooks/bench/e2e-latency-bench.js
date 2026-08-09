@@ -19,6 +19,7 @@
 "use strict";
 
 const { spawnSync, execFileSync } = require("child_process");
+const { findBash, makeShimDir, countForks } = require("./fork-shim");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -76,45 +77,13 @@ function benchHook(label, hookFile, payload, env) {
 // So bash hooks report FORK COUNT alongside latency — fork count is the
 // load-independent number; latency is environment-dependent.
 //
-// Fork counting: a PATH-shim directory where common external commands
-// are wrapped to append one byte to a log, then exec the real binary.
-// Counts external-command spawns (the dominant Windows cost). NOT
-// counted: subshell forks of pure builtins, externals missing from
-// SHIM_COMMANDS, and commands exec'd via absolute path (they bypass
-// PATH — e.g. a resolve-python.sh result). Treat the count as a floor.
-// The count run is separate from the latency runs — the shim doubles
-// each spawn, so its timings are discarded.
+// Fork counting lives in ./fork-shim.js (mechanism and its limits are
+// documented there). This bench REPORTS the count; fork-budget.test.js
+// ENFORCES a ceiling on it and runs in CI, because a bench nobody runs
+// catches nothing.
 //
 // watcher.sh is deliberately absent: it is a long-running poller
 // (Stop + asyncRewake), so per-invocation latency is meaningless.
-
-const SHIM_COMMANDS = [
-  "date", "sed", "tr", "cat", "mkdir", "rm", "rmdir", "sleep", "mv", "cp",
-  "python", "python3", "py", "grep", "cut", "head", "tail", "wc", "uname",
-  "find", "touch", "dirname", "basename", "stat", "jq", "git", "curl",
-  "node", "tkr",
-];
-
-function findBash() {
-  const probe = spawnSync("bash", ["-c", "exit 0"]);
-  return probe.error ? null : "bash";
-}
-
-function makeShimDir(root, realPath) {
-  const shimDir = path.join(root, "fork-shims");
-  fs.mkdirSync(shimDir, { recursive: true });
-  for (const cmd of SHIM_COMMANDS) {
-    const shim = path.join(shimDir, cmd);
-    fs.writeFileSync(
-      shim,
-      `#!/bin/bash\n` +
-        `printf . >> "$TKR_BENCH_FORK_LOG"\n` +
-        `PATH="$TKR_BENCH_REAL_PATH" exec ${cmd} "$@"\n`
-    );
-    fs.chmodSync(shim, 0o755);
-  }
-  return shimDir;
-}
 
 function benchBashHook(bash, label, hookFile, payload, env, shimDir, forkLog) {
   const input = JSON.stringify(payload);
@@ -137,20 +106,9 @@ function benchBashHook(bash, label, hookFile, payload, env, shimDir, forkLog) {
   times.sort((a, b) => a - b);
 
   // Separate single run with the shim PATH prepended, for the fork count.
-  let forks = -1;
-  try {
-    fs.writeFileSync(forkLog, "");
-    const shimEnv = {
-      ...env,
-      PATH: `${shimDir}${path.delimiter}${env.PATH || ""}`,
-      TKR_BENCH_FORK_LOG: forkLog,
-      TKR_BENCH_REAL_PATH: env.PATH || "",
-    };
-    const res = spawnSync(bash, [hookPath], { input, env: shimEnv, stdio, timeout: 30_000 });
-    if (!res.error) forks = fs.statSync(forkLog).size;
-  } catch {
-    // fork count stays -1 (reported as "?")
-  }
+  // The shim doubles each spawn, so its timing is discarded. Budgets for
+  // these counts are ENFORCED in fork-budget.test.js — this bench reports.
+  const forks = countForks(bash, hookPath, payload, env, shimDir, forkLog);
 
   return {
     label,
@@ -246,7 +204,7 @@ function main() {
   // Bash hooks (issue #129 item 3) — latency + fork count.
   const bash = findBash();
   if (bash) {
-    const shimDir = makeShimDir(dir, env.PATH || "");
+    const shimDir = makeShimDir(dir);
     const forkLog = path.join(dir, "fork-count");
     // Realistic CC spawn: no TKR_SESSION_ID env, so resolve-sid.sh takes
     // the payload-parse path (the python spawn) — the fork-heavy branch

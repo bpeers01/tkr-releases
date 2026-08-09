@@ -93,3 +93,22 @@ keepalive_fire_gate() {
     echo "PROCEED"
   fi
 }
+
+# keepalive_pending_prompt_gate <pending_flag>
+# Issue #152 item 1: a pending AskUserQuestion/ExitPlanMode appends no
+# transcript rows while the human is deciding, so idle time alone reads it
+# as abandoned. `pending_flag` is transcript-activity.py's `pending` mode
+# output ("1"/"0"; anything else treated as "0" — see caller for why a
+# detection failure defaults to "not pending" rather than "pending").
+#
+# Echoes exactly one of:
+#   WAIT     — an interactive prompt is outstanding; override any FIRE.
+#   PROCEED  — no pending prompt (or unknown); normal decision stands.
+keepalive_pending_prompt_gate() {
+  local pending="$1"
+  if [ "$pending" = "1" ]; then
+    echo "WAIT"
+  else
+    echo "PROCEED"
+  fi
+}

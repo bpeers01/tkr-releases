@@ -57,13 +57,23 @@
 #                                  landed in a different session than the
 #                                  firing watcher; method
 #                                  `state_gate_project`.
+#   2c. human-answer correction  — #152: both state gates read marker state
+#                                  only and cannot see an AskUserQuestion
+#                                  answer (a tool_result, which does not
+#                                  clear the marker). When the transcript
+#                                  shows a human answered AFTER the fire,
+#                                  downgrade to manual; method
+#                                  `human_answer_after_fire`. Downgrade
+#                                  only — it never manufactures a
+#                                  keepalive claim.
 #   3. unknown                   — sid unresolved; the gate is keyed by
 #                                  sid, so provenance cannot be read.
 #
 # Deliberately NOT model-passed from the skill: a measurement that only
 # exists if a model remembers to emit it does not exist (HAND-003).
 # Recorded as `handoff_source` (+ `handoff_source_method`:
-# flag|state_gate|no_sid) on the ledger row and as an HTML comment on
+# flag|state_gate|state_gate_project|human_answer_after_fire|no_sid) on
+# the ledger row and as an HTML comment on
 # line 2 of the file. Absent field/marker == pre-HAND-002, legacy.
 
 set -euo pipefail
@@ -106,6 +116,11 @@ while [ $# -gt 0 ]; do
 done
 
 [ -z "$SESSION_ID" ] && SESSION_ID_SOURCE="unresolved"
+
+PYTHON_BIN="${TKR_PYTHON:-python3}"
+if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+  PYTHON_BIN="python"
+fi
 
 # Provenance (HAND-002): explicit flag wins; else the fired-at state gate.
 if [ -z "$SOURCE" ]; then
@@ -152,6 +167,53 @@ if [ "$SOURCE" = "manual" ] && [ "$SOURCE_METHOD" = "state_gate" ]; then
   fi
 fi
 
+# Issue #152 item 3: both gates above conclude `keepalive` from marker
+# STATE alone. Neither can see an AskUserQuestion answer — that arrives as
+# a tool_result, and the activity touch (which would clear the marker) runs
+# only from UserPromptSubmit. So a handoff written seconds after a human
+# genuinely answered is still stamped `keepalive`.
+#
+# That is a measurement bug, not a label bug: cache_channels.py reads this
+# marker, so keepalive-value figures are inflated by exactly the fires that
+# were wrong to happen. Ask the transcript whether a human answered AFTER
+# the fire, and correct the stamp when they did.
+#
+# Transcript resolution is keyed by session id, NEVER by mtime — the
+# "newest transcript" heuristic is rejected at the top of this file, and it
+# would be wrong here for the same reason. Unresolved sid, no match,
+# ambiguous match, or any detector failure ⇒ leave provenance exactly as
+# the state gates left it (today's behavior, the safe direction: this can
+# only ever downgrade a keepalive claim, never manufacture one).
+if [ "$SOURCE" = "keepalive" ] && [ -n "$SESSION_ID" ]; then
+  case "$SOURCE_METHOD" in
+    state_gate)         FIRE_EPOCH="$(cat "$STATE_DIR/keepalive/$SESSION_ID/fired-at" 2>/dev/null || echo 0)" ;;
+    state_gate_project) FIRE_EPOCH="${PROJ_FIRED:-0}" ;;
+    *)                  FIRE_EPOCH=0 ;;
+  esac
+  case "$FIRE_EPOCH" in ''|*[!0-9]*) FIRE_EPOCH=0 ;; esac
+
+  # Exactly one sid-keyed transcript, or nothing. A glob that matches two
+  # projects means the same sid exists twice; that is ambiguous, so refuse.
+  TRANSCRIPT_MATCHES=""
+  MATCH_COUNT=0
+  for _t in "$HOME"/.claude/projects/*/"$SESSION_ID".jsonl; do
+    [ -f "$_t" ] || continue
+    TRANSCRIPT_MATCHES="$_t"
+    MATCH_COUNT=$((MATCH_COUNT + 1))
+  done
+
+  if [ "$FIRE_EPOCH" -gt 0 ] && [ "$MATCH_COUNT" -eq 1 ]; then
+    ANSWER_SCRIPT="$(dirname "$0")/../../../hooks/keepalive/transcript-activity.py"
+    if [ -f "$ANSWER_SCRIPT" ]; then
+      ANSWER_EPOCH="$("$PYTHON_BIN" "$ANSWER_SCRIPT" "$TRANSCRIPT_MATCHES" human-answer 2>/dev/null || echo 0)"
+      case "$ANSWER_EPOCH" in ''|*[!0-9]*) ANSWER_EPOCH=0 ;; esac
+      if [ "$ANSWER_EPOCH" -gt "$FIRE_EPOCH" ]; then
+        SOURCE="manual"; SOURCE_METHOD="human_answer_after_fire"
+      fi
+    fi
+  fi
+fi
+
 # Resolve default target when unset.
 if [ -z "$TARGET" ]; then
   IDENT="$NAME_OVERRIDE"
@@ -165,11 +227,6 @@ fi
 
 if [ -n "${TKR_HANDOFF_NO_EMIT:-}" ] && [ "${TKR_HANDOFF_NO_EMIT}" = "1" ]; then
   NO_EMIT=1
-fi
-
-PYTHON_BIN="${TKR_PYTHON:-python3}"
-if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
-  PYTHON_BIN="python"
 fi
 
 # Heredoc-to-tmpfile pattern: writing the python helpers to tmp files keeps

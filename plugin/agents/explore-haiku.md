@@ -2,7 +2,7 @@
 name: explore-haiku
 description: TKR-routed bounded read-only lookup and repository exploration.
 model: haiku
-effort: low
+effort: none
 maxTurns: 8
 tools: Read, Glob, Grep, Bash
 background: false

@@ -38,6 +38,13 @@ const { loadAutorouteConfig } = require("./lib/injection-config");
 const { getTelemetryPath } = require("./lib/statusline-path");
 const { readJSONSync } = require("./lib/safe-json");
 const { rotateIfLarge } = require("./lib/rotate-jsonl");
+const { isSubagentContext } = require("./lib/subagent-context");
+const { tkrSpawnArgv } = require("./lib/tkr-bin");
+const {
+  rememberMode,
+  timeoutVerdict,
+  vetoTimeoutMs,
+} = require("./lib/veto-fallback");
 const routeState = require("./lib/route-state");
 const {
   claimPlan,
@@ -90,7 +97,99 @@ function handleInput(input) {
     // check ran and what it found. null means "no verdict" (non-tkr
     // profile, feature off, or the check itself failed open) and must
     // never be treated as a denial — only an explicit deny verdict blocks.
-    const veto = vetoCheck(subagentType, toolInput);
+    //
+    // TWO checks, not one (#143 finding 2). The first is the call as the
+    // coordinator wrote it. The second is the call this hook would
+    // actually emit — and only that one can see an assisted rewrite,
+    // because vetoCheck scopes itself to tkr:* profiles and a generic or
+    // Explore spawn carries none until the rewrite gives it one. Without
+    // it, a spawn whose prompt carries mutation intent could become
+    // tkr:explore-haiku, a read-only profile, with the profile's own
+    // contract never consulted about the call that ran.
+    const forceForeground = toolInput.run_in_background !== false;
+    const shouldInjectPrompt = shouldInject(subagentType);
+    // Capacity autoroute is skipped when task routing already owns this
+    // spawn's model. The two axes stay separate by design (DELEG is
+    // pressure, WRK is task shape) but exactly one of them may write the
+    // model field, or the second silently overwrites the first. Keyed on
+    // ELIGIBILITY rather than a taken claim so the prospective call is
+    // built from the same decisions the real one will be.
+    const workEligible = Boolean(work && work.eligible);
+    const autoModel = workEligible ? "" : autorouteModel(event, toolInput, subagentType);
+
+    const buildOpts = {
+      forceForeground,
+      shouldInjectPrompt,
+      applyWork: workEligible,
+      work,
+      autoModel,
+    };
+    const prospective = buildUpdatedInput(toolInput, prompt, buildOpts);
+
+    const asWritten = vetoCheck(subagentType, toolInput);
+    // Only worth a second subprocess when the rewrite would actually
+    // change the profile being asked about; otherwise this is the same
+    // question the first check already answered.
+    const asEmitted = workEligible && work.plannedProfile !== subagentType
+      ? vetoCheck(prospective.subagent_type, prospective)
+      : { verdict: null, unavailable: "" };
+    // What POLICY said, on the checks that answered. Kept separate from the
+    // local fallback below all the way to the ledger: `veto_checked: true`
+    // must keep meaning "route.VetoCheck rendered this verdict", or the
+    // coverage metric silently starts counting the hook's own guesses.
+    const policyVeto = strongestVerdict(asWritten.verdict, asEmitted.verdict);
+    // First failure wins. Either check failing means this spawn ran with
+    // at least one question unanswered, which is the fact the row records;
+    // enumerating both would imply the two are independently actionable.
+    const vetoUnavailable = asWritten.unavailable || asEmitted.unavailable;
+
+    // #143 finding 1, second half. A timeout at the MEASURED budget means
+    // the binary is hung, not that the box is busy — that is what makes a
+    // local decision defensible at all, and it is why the budget had to be
+    // measured before this branch could exist. Evaluated per check against
+    // the spawn that check was asking about: the as-written call and the
+    // rewritten one can name different profiles and carry different prompts,
+    // so one may fall inside the fail-closed class while the other does not.
+    // Every other unavailable reason (unreachable, bad_response) means the
+    // check COULD NOT RUN and stays fail-open — a machine without a working
+    // tkr must not have its spawns depend on one.
+    const localVeto = strongestVerdict(
+      asWritten.unavailable === "timeout"
+        ? timeoutVerdict({ subagentType, prompt: toolInput.prompt || "" })
+        : null,
+      asEmitted.unavailable === "timeout"
+        ? timeoutVerdict({
+          subagentType: prospective.subagent_type,
+          prompt: prospective.prompt || "",
+        })
+        : null,
+    );
+
+    // Severity ordering does the merge, so a local deny cannot be masked by
+    // the other check's allow — the same rule finding 2 established for the
+    // as-written/as-emitted pair.
+    const veto = strongestVerdict(policyVeto, localVeto);
+    const vetoDenied = Boolean(veto && veto.enforce === true && veto.verdict === "deny");
+
+    // Claim only once every refusal is settled. A denied spawn leaves the
+    // plan unclaimed so a corrected retry can still use it (#143 finding
+    // 2); before this, the claim was taken inside workRoute and a veto
+    // arriving afterwards consumed the plan for a spawn that never ran.
+    if (!vetoDenied) {
+      claimWork(sid, work);
+    }
+    // A lost claim means this process may not apply the plan after all,
+    // so the emitted call must fall back to the un-rewritten form. Built
+    // from the same builder rather than patched, so the two paths cannot
+    // disagree about what "no rewrite" means.
+    const applyWork = Boolean(work && work.apply);
+    const updatedInput = applyWork === workEligible
+      ? prospective
+      : buildUpdatedInput(toolInput, prompt, {
+        ...buildOpts,
+        applyWork,
+        autoModel: applyWork ? "" : autorouteModel(event, toolInput, subagentType),
+      });
 
     // INV-023 P1 — record every Task spawn to ~/.tkr/task-spawns.jsonl.
     // Fire-and-forget; the spawn observation must not gate the rewrite
@@ -138,11 +237,32 @@ function handleInput(input) {
       // Veto fields are spawn-level, not plan-level: a veto can fire (or
       // not run at all) independently of whether a work plan was current,
       // so they sit beside the plan_id block rather than inside it.
-      ...(veto ? {
+      ...(policyVeto ? {
         veto_checked: true,
-        veto_denied: veto.enforce === true && veto.verdict === "deny",
-        veto_reason: veto.reason || "",
-        veto_would_deny: veto.would_deny === true,
+        veto_denied: policyVeto.enforce === true && policyVeto.verdict === "deny",
+        veto_reason: policyVeto.reason || "",
+        veto_would_deny: policyVeto.would_deny === true,
+      } : vetoUnavailable ? {
+        // Mutually exclusive with veto_checked, and deliberately a
+        // DIFFERENT key rather than veto_checked:false: absence of
+        // veto_checked keeps meaning "no check was attempted" on both v4
+        // and v5 rows, so nothing that already reads this ledger changes
+        // meaning. This key adds the case that was previously
+        // indistinguishable from it — attempted, and could not answer.
+        veto_unavailable: vetoUnavailable,
+      } : {}),
+      // v6 (#143 finding 1). A denial the HOOK made because policy did not
+      // answer in time. Deliberately its own key rather than folded into
+      // veto_denied: that field answers "did the policy refuse this spawn",
+      // and a fallback denial is a different claim with different standing —
+      // it is made on a cached mode and a keyword scan, and it is the one
+      // denial a user can hit with tkr wedged. Counting the two together
+      // would make the veto look more authoritative than it is, in exactly
+      // the situation where it is least so. Written whenever the fallback
+      // denied, independently of whether the OTHER check answered.
+      ...(localVeto && localVeto.verdict === "deny" ? {
+        veto_local_deny: true,
+        veto_local_reason: localVeto.reason || "",
       } : {}),
     });
 
@@ -152,7 +272,7 @@ function handleInput(input) {
     // Both response forms are carried for Claude Code version compat: the
     // older top-level decision/reason contract and the newer
     // hookSpecificOutput.permissionDecision one. No updatedInput on a deny.
-    if (veto && veto.enforce === true && veto.verdict === "deny") {
+    if (vetoDenied) {
       const detail = veto.detail || veto.reason || "";
       process.stdout.write(JSON.stringify({
         decision: "block",
@@ -166,46 +286,12 @@ function handleInput(input) {
       return;
     }
 
-    // Always force foreground execution — idempotent, harmless if already false.
-    const forceForeground = toolInput.run_in_background !== false;
-    const shouldInjectPrompt = shouldInject(subagentType);
-    const applyWork = Boolean(work && work.apply);
-    // Capacity autoroute is skipped when task routing already owns this
-    // spawn's model. The two axes stay separate by design (DELEG is
-    // pressure, WRK is task shape) but exactly one of them may write the
-    // model field, or the second silently overwrites the first.
-    const autoModel = applyWork ? "" : autorouteModel(event, toolInput, subagentType);
-
+    // Nothing to change: no forced foreground, no guidance, no model
+    // rewrite, no plan applied. Exit without an updatedInput rather than
+    // emitting one identical to the input.
     if (!forceForeground && !shouldInjectPrompt && !autoModel && !applyWork) {
       process.exit(0);
       return;
-    }
-
-    const updatedInput = { ...toolInput };
-    if (forceForeground) {
-      updatedInput.run_in_background = false;
-    }
-    if (shouldInjectPrompt) {
-      const guidance = SEARCH_GUIDANCE.trimEnd() + "\n\n";
-      updatedInput.prompt = guidance + prompt;
-    }
-    if (applyWork) {
-      updatedInput.subagent_type = work.plannedProfile;
-      updatedInput.model = work.plannedModel;
-      updatedInput.run_in_background = false;
-      updatedInput.prompt =
-        WORKER_CONTRACT_SCAFFOLD.trimEnd() + "\n\n" + (updatedInput.prompt || prompt);
-      // No consumption bookkeeping here: workRoute already claimed the
-      // plan exclusively, and only the winning process reaches this.
-    }
-    if (autoModel) {
-      updatedInput.model = autoModel;
-      // Smaller models execute well on explicit instructions and degrade
-      // on ambiguity (larger models absorb it). A downgraded spawn gets
-      // an execution contract, not just a cheaper engine — otherwise the
-      // savings leak back out as wandering tool calls and rework.
-      updatedInput.prompt =
-        DOWNGRADE_SCAFFOLD.trimEnd() + "\n\n" + (updatedInput.prompt || prompt);
     }
 
     const result = {
@@ -222,6 +308,57 @@ function handleInput(input) {
   }
 }
 
+// buildUpdatedInput produces the tool_input this hook would emit for a
+// given set of decisions.
+//
+// Factored out so the call the veto INSPECTS and the call that actually
+// RUNS are produced by the same code (#143 finding 2). Two hand-rolled
+// copies would drift, and the drift would be invisible: the veto would
+// keep passing while the emitted call diverged from what it approved.
+function buildUpdatedInput(toolInput, prompt, opts) {
+  const updatedInput = { ...toolInput };
+  if (opts.forceForeground) {
+    updatedInput.run_in_background = false;
+  }
+  if (opts.shouldInjectPrompt) {
+    updatedInput.prompt = SEARCH_GUIDANCE.trimEnd() + "\n\n" + prompt;
+  }
+  if (opts.applyWork) {
+    updatedInput.subagent_type = opts.work.plannedProfile;
+    updatedInput.model = opts.work.plannedModel;
+    updatedInput.run_in_background = false;
+    updatedInput.prompt =
+      WORKER_CONTRACT_SCAFFOLD.trimEnd() + "\n\n" + (updatedInput.prompt || prompt);
+  }
+  if (opts.autoModel) {
+    updatedInput.model = opts.autoModel;
+    // Smaller models execute well on explicit instructions and degrade
+    // on ambiguity (larger models absorb it). A downgraded spawn gets
+    // an execution contract, not just a cheaper engine — otherwise the
+    // savings leak back out as wandering tool calls and rework.
+    updatedInput.prompt =
+      DOWNGRADE_SCAFFOLD.trimEnd() + "\n\n" + (updatedInput.prompt || prompt);
+  }
+  return updatedInput;
+}
+
+// strongestVerdict picks the verdict that should govern, and the one the
+// ledger row should carry, across the two veto checks a spawn can face.
+//
+// Precedence is by severity, not by which check ran first: an enforcing
+// deny outranks an observe-mode would-deny, which outranks a plain
+// allow. Anything else and a rewritten call's deny could be masked by
+// the original call's allow — which is the whole gap finding 2 names.
+function strongestVerdict(a, b) {
+  const rank = (v) => {
+    if (!v) return 0;
+    if (v.enforce === true && v.verdict === "deny") return 3;
+    if (v.would_deny === true) return 2;
+    return 1;
+  };
+  return rank(b) > rank(a) ? b : a;
+}
+
 // vetoCheck asks `tkr route veto-check` whether this spawn violates the
 // named tkr:* profile's own contract (ADR-0033 Phase 4). Returns null for
 // "no verdict, proceed" — a non-tkr subagent_type, the kill switch, or any
@@ -234,30 +371,64 @@ function handleInput(input) {
 // this policy knows nothing about, so a check that never ran costs nothing
 // and a check that ran and got it wrong would answer a question nobody
 // asked.
+// Returns { verdict, unavailable }:
+//   verdict     — the parsed route.VetoVerdict, or null for "no verdict".
+//   unavailable — "" when no check was ATTEMPTED (non-tkr profile, kill
+//                 switch), otherwise why an attempted check produced no
+//                 verdict: "timeout" | "unreachable" | "bad_response".
+//
+// That split is the point (#143 finding 1). Fail-open is correct and stays
+// exactly as it was — but it used to be SILENT, and a silent fail-open is
+// unmeasurable: the ledger row for a veto that timed out was byte-identical
+// to one for a spawn nobody ever asked about. On Windows, where a bare
+// process spawn degrades to 4-6s under multi-session load (INV-085) against
+// this 500ms budget, that is the difference between "the veto is not
+// firing" and "the veto had nothing to say".
 function vetoCheck(subagentType, toolInput) {
-  if (!String(subagentType).startsWith("tkr:")) return null;
-  if (process.env.TKR_WORK_VETO_DISABLED === "1") return null;
+  const none = { verdict: null, unavailable: "" };
+  if (!String(subagentType).startsWith("tkr:")) return none;
+  if (process.env.TKR_WORK_VETO_DISABLED === "1") return none;
   try {
-    const res = spawnSync("tkr", ["route", "veto-check"], {
+    const { cmd, argv } = tkrSpawnArgv(["route", "veto-check"]);
+    const res = spawnSync(cmd, argv, {
       input: JSON.stringify({
         subagent_type: subagentType,
         model: toolInput.model || "",
         prompt: toolInput.prompt || "",
       }),
       encoding: "utf8",
-      timeout: 500,
+      timeout: vetoTimeoutMs(),
       windowsHide: true,
     });
     // FAIL OPEN: a missing/hung/watchdog-killed tkr binary, a nonzero
     // exit, or an empty response must never block a spawn — they are all
-    // "the check did not run", not "the check said no".
-    if (res.error || res.status !== 0 || !res.stdout) return null;
+    // "the check did not run", not "the check said no". Each is now named.
+    if (res.error) {
+      // Node reports a timeout kill as an ETIMEDOUT error; everything else
+      // (ENOENT, EACCES, ENOEXEC) means the binary could not be run.
+      const timedOut = res.error.code === "ETIMEDOUT" || res.signal === "SIGTERM";
+      return { verdict: null, unavailable: timedOut ? "timeout" : "unreachable" };
+    }
+    if (res.status !== 0 || !res.stdout) {
+      return { verdict: null, unavailable: "bad_response" };
+    }
     const parsed = JSON.parse(res.stdout);
-    return parsed && typeof parsed === "object" ? parsed : null;
+    if (!parsed || typeof parsed !== "object") {
+      return { verdict: null, unavailable: "bad_response" };
+    }
+    // Condition 3 of the fail-closed scope needs the work mode, and the
+    // process that knows it is this one, on the calls that DID answer. A
+    // timeout has no verdict to read a mode off, and growing a second JS
+    // reader of the Go config would be a parallel port with all the drift
+    // that implies — so every answered verdict leaves its mode behind for
+    // the timeout path to find. Best-effort: an unwritable state dir costs
+    // a later fail-open and nothing else.
+    rememberMode(parsed.mode);
+    return { verdict: parsed, unavailable: "" };
   } catch {
     // Includes a stdout payload that failed to parse as JSON — same
     // fail-open rule.
-    return null;
+    return { verdict: null, unavailable: "bad_response" };
   }
 }
 
@@ -393,44 +564,49 @@ function workRoute(sid, toolInput, subagentType) {
     // instruction rather than a surprise.
     if (current.announced !== true) return descriptor;
 
-    // Claim last, and only once everything else has passed, so a plan is
-    // not burned by a spawn that was going to be refused anyway.
-    // Exclusive create, not check-then-write: parallel PreToolUse(Agent)
-    // processes are routine when the coordinator dispatches several
-    // workers at once, and both would pass a read-only check.
-    //
-    // A denied claim is recorded, because "one plan reshaped at most one
-    // spawn" is an invariant nobody can check from a ledger that only
-    // shows the winner. Denied covers both causes claimPlan collapses
-    // together — the plan was already used, or the claim could not be
-    // written at all — and the field name says neither more than that.
-    if (!claimPlan(sid, current.planID)) {
-      descriptor.claimDenied = true;
-      return descriptor;
-    }
-
-    descriptor.apply = true;
+    // Eligible, NOT claimed. The claim moved out to the caller (#143
+    // finding 2): it has to happen after the veto, and the veto cannot
+    // run until the rewrite this function describes is known. Claiming
+    // here burned the plan on spawns the veto then denied, so the
+    // corrected retry found nothing to route — "not burned by a spawn
+    // that was going to be refused anyway" was the intent all along,
+    // and a refusal arriving from the veto is still a refusal.
+    descriptor.eligible = true;
     return descriptor;
   } catch {
     return null;
   }
 }
 
-// isSubagentContext reports whether THIS hook invocation happened inside
-// a subagent (sidechain) rather than the main session. agent_id and
-// agent_type are the documented markers — hooks.md lists both as present
-// only when the hook fires inside a subagent, and documents that the
-// sidechain shares the parent's session_id. scope==="subagent" and a
-// top-level subagent_type are the undocumented mirrors
-// user-prompt-submit.js already checks; tool_input.subagent_type (the
-// SPAWN TARGET) is deliberately not consulted. Inert when every marker
-// is absent — the receipt and claim protections remain underneath.
-function isSubagentContext(event) {
-  if (!event || typeof event !== "object") return false;
-  if (event.agent_id || event.agent_type) return true;
-  if (event.scope === "subagent") return true;
-  return typeof event.subagent_type === "string" && event.subagent_type.length > 0;
+// claimWork takes the exclusive plan claim for an eligible descriptor and
+// records the outcome on it. Split from workRoute so every reason to
+// refuse a spawn — including the veto, which needs the rewritten call
+// workRoute describes — is settled before the plan is consumed.
+//
+// Exclusive create, not check-then-write: parallel PreToolUse(Agent)
+// processes are routine when the coordinator dispatches several workers
+// at once, and both would pass a read-only check.
+//
+// A denied claim is recorded, because "one plan reshaped at most one
+// spawn" is an invariant nobody can check from a ledger that only shows
+// the winner. Denied covers both causes claimPlan collapses together —
+// the plan was already used, or the claim could not be written at all —
+// and the field name says neither more than that.
+function claimWork(sid, work) {
+  if (!work || work.eligible !== true) return false;
+  if (!claimPlan(sid, work.planID)) {
+    work.claimDenied = true;
+    return false;
+  }
+  work.apply = true;
+  return true;
 }
+
+// isSubagentContext moved to lib/subagent-context.js (contract documented
+// there) when the keepalive interactive-answer touch needed the same
+// predicate — one definition, so the two callers cannot drift. It stays
+// inert when every marker is absent, so the receipt and claim protections
+// below remain load-bearing here.
 
 function shouldInject(subagentType) {
   // Only inject for Explore agents — they exist for orientation/discovery

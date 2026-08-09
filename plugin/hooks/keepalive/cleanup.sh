@@ -7,8 +7,18 @@
 
 set -u
 
+# A native caller (node spawnSync, Claude Code on Windows) invokes this as
+# `bash C:\...\cleanup.sh` with no MSYS arg conversion, so $0 arrives
+# backslashed and dirname yields "." — sourcing would then resolve against the
+# caller's CWD and set -u would abort the hook.
+SELF="${0//\\//}"
+case "$SELF" in
+  */*) SELF_DIR="${SELF%/*}" ;;
+  *)   SELF_DIR="." ;;
+esac
+
 # shellcheck source=./resolve-sid.sh
-. "$(dirname "$0")/resolve-sid.sh"
+. "$SELF_DIR/resolve-sid.sh"
 SID="$KEEPALIVE_SID"
 
 # The shared resolver returns "default" as a last-resort sentinel when

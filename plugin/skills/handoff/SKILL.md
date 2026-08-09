@@ -106,8 +106,17 @@ Override via `TKR_HANDOFF_TARGET` / `--target <path>`.
    from the watcher's keepalive_fired path that want their own event
    class.
 5. **Recommend `/clear`** — close with: "Handoff written to
-   `<target-path>`. Recommend `/clear` next to reset the prefix
-   cache cheaply; the next session reads it via `/continue`."
+   `<target-path>`. Recommend `/clear` next to reset the prefix cache
+   cheaply; the carry-over auto-loads on the other side, no
+   `/continue` needed."
+
+   HAND-005: SessionStart injects the body directly when the session
+   started from `/clear` and this is the only handoff written in the
+   last 10 minutes — which is exactly the state a `/clear` taken on
+   this recommendation lands in. Outside that window the SessionStart
+   advisory names the file and asks for `/continue` as before, so the
+   claim degrades to a nudge rather than a lie. Do not promise more:
+   `/clear` itself cannot be automated from any hook.
 
 ## Behavior
 

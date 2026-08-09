@@ -602,6 +602,32 @@ function writeStateLineState(sid, state) {
   }
 }
 
+// PACE-001 — mirrors internal/signals/pace.go runwayRatio for the injected
+// state line. A percentage without a reset time is not a pressure reading:
+// 85% with eleven hours left is 15% of budget covering 6.7% of a window.
+// The model was reading the bare percentage as an emergency and cutting
+// sessions short at the tail of a window the user had already paid for.
+//
+// Returns "" when resets_at is absent, already past, or further out than one
+// window — the same three refusals the Go side makes. Never substitutes a
+// default; an unknown runway must read as unknown.
+const SEVEN_DAY_WINDOW_SECS = 7 * 24 * 3600;
+
+function runwaySuffix(pct, resetsAt, nowSecs, windowSecs = SEVEN_DAY_WINDOW_SECS) {
+  if (typeof resetsAt !== "number" || resetsAt <= 0) return "";
+  const leftSecs = resetsAt - nowSecs;
+  if (leftSecs <= 0 || leftSecs > windowSecs) return "";
+
+  const remainingBudget = Math.max(0, 100 - pct);
+  const remainingWindow = (100 * leftSecs) / windowSecs;
+  if (remainingWindow <= 0) return "";
+  const runway = remainingBudget / remainingWindow;
+
+  const hours = leftSecs / 3600;
+  const rst = hours < 48 ? `${Math.round(hours)}h` : `${Math.round(hours / 24)}d`;
+  return ` (rst${rst} rw${runway.toFixed(1)}x)`;
+}
+
 // stateLineContext — composable state line per proposal §3.2.
 // Variants: quiet | warming | seasoned | pre-TTL | hot | critical.
 // Hysteresis on ctx/turn/5h/7d; age field uses [age_s, age_s+100] window.
@@ -636,7 +662,15 @@ function stateLineContext(sid, telemetryPath, thresholds, telOverride) {
   const fields = [];
   if (state.turn_locked) fields.push(`t=${turn}`);
   if (state.ctx_locked) fields.push(`ctx=${ctxK}K`);
-  if (state.sevenday_locked && sevenDay >= 0) fields.push(`7d=${sevenDay}%`);
+  // PACE-001 amends the frozen §5 Q4 wording by ADDING to the 7d field,
+  // never paraphrasing it: `7d=N%` is untouched and the runway rides in a
+  // parenthetical after it. The suffix is deliberately absent from the
+  // bucket keys below — a reset countdown moves every second, and folding
+  // it into the delta trigger would re-emit the line every turn.
+  if (state.sevenday_locked && sevenDay >= 0) {
+    const nowSecs = Math.floor(Date.now() / 1000);
+    fields.push(`7d=${sevenDay}%${runwaySuffix(sevenDay, tel.seven_day_resets_at, nowSecs)}`);
+  }
   if (state.fivehour_locked && fiveHour >= 0) fields.push(`5h=${fiveHour}%`);
   if (ageInWindow) fields.push(`age~${idleSecs}s`);
 
@@ -825,7 +859,15 @@ const ROUTE_SYNC_TIMEOUT_MS = (() => {
 
 function classifyRouteSync(promptText, input) {
   try {
-    const res = spawnSync("tkr", ["route", "classify", promptText, "--json"], {
+    // prompt_id is the ONLY anchor that joins the route ledger to
+    // task-spawns.jsonl. Without it the two key on different columns
+    // (prompt_hash vs prompt_id) and join only through a Claude Code
+    // transcript — unreproducible once transcripts rotate. Empty when
+    // Claude Code supplied none; the Go side omits the field then.
+    const promptID = (input && input.prompt_id) || "";
+    const argv = ["route", "classify", promptText, "--json"];
+    if (promptID) argv.push("--prompt-id", promptID);
+    const res = spawnSync("tkr", argv, {
       timeout: ROUTE_SYNC_TIMEOUT_MS,
       stdio: "ignore",
       windowsHide: true,
@@ -1062,6 +1104,17 @@ function routeInjectContext(input, tel) {
     // No verdict → nothing on any channel.
     if (!effort || effort === "none") return "";
 
+    // When the matrix names a different MODEL, this verdict's effort
+    // figure describes THAT model, not the session's — `recommended_model`
+    // is set only when the active model cannot serve the shape at any
+    // effort (ADR-0010, 2026-07-29 addendum). Injecting it here told a
+    // Haiku session to raise effort to `xhigh`, a parameter its tier does
+    // not accept at all, while the escalation that WAS the answer went
+    // undelivered (#143 finding 3). The model recommendation is
+    // shapeNudgeContext's to carry; this channel stays silent so the
+    // session gets one recommendation instead of two that contradict.
+    if (parsed.escalate_model || parsed.recommended_model) return "";
+
     const mode = routeInjectMode();
     if (mode === "off") return "";
     if (mode === "always") {
@@ -1159,7 +1212,6 @@ function shapeNudgeContext(input, tel) {
     if (!promptText) return "";
 
     const active = detectActiveEffort(input);
-    if (!active) return ""; // can't compare without active signal
 
     // routeInjectContext runs first in composeContext and classifies
     // synchronously on miss, so this read is a hit on the same turn.
@@ -1170,6 +1222,38 @@ function shapeNudgeContext(input, tel) {
 
     const shape = parsed.shape || "";
     const recommend = parsed.recommend_effort || "";
+
+    // Model escalation is resolved FIRST, ahead of both the active-effort
+    // guard and the recommend_effort guard, because it is the one verdict
+    // that survives neither (#143 finding 3):
+    //
+    //   - an escalation carries no `recommend_effort` — the matrix is
+    //     saying this tier cannot serve the shape at ANY effort, so there
+    //     is no figure to name — and the guard below dropped it;
+    //   - the active model may accept no effort parameter at all (Haiku),
+    //     so `detectActiveEffort` returns nothing and the guard above
+    //     dropped it too.
+    //
+    // Between them, the case the matrix is most confident about was the
+    // one case no channel ever delivered. Effort is not compared here on
+    // purpose: raising it cannot fix a model that is below the shape's
+    // threshold, which is exactly why the recommendation is a model.
+    const escalate = parsed.escalate_model || parsed.recommended_model || "";
+    if (shape && escalate) {
+      const mode = routeInjectMode();
+      if (mode === "off") return "";
+      const stakes = parsed.high_stakes ? " high-stakes" : "";
+      const line = `[tkr: shape=${shape}${stakes} — this model is below the threshold ` +
+        `for this shape at any effort; ${escalate} recommended; switch at next natural break]`;
+      if (mode === "always") return line;
+      const sid = extractSessionID(input || {}) || "";
+      const state = readRouteNudgeState(sid);
+      const fire = trackSustained(state.shape, `escalate:${shape}|${escalate}`);
+      writeRouteNudgeState(sid, state);
+      return fire ? line : "";
+    }
+
+    if (!active) return ""; // can't compare without active signal
     if (!shape || !recommend) return ""; // legacy entry; nothing matrix-aware to say
 
     const aRank = effortRank(active);
@@ -1204,8 +1288,12 @@ function shapeNudgeContext(input, tel) {
       return ""; // active is at or below recommended — no over-effort
     }
 
-    // Matrix wants escalate-model AND active is high; this is a model
-    // mismatch, not an effort mismatch. Defer to a future nudge.
+    // Escalation is handled above and returns before reaching here, so
+    // this branch is unreachable for an escalating verdict. Kept as a
+    // belt-and-braces guard rather than deleted: if a future verdict
+    // shape carries escalate_model WITHOUT the recommend_effort the
+    // block above keys on, silence still beats telling an underpowered
+    // model to lower its effort.
     if (parsed.escalate_model) return "";
 
     const stakes = parsed.high_stakes ? " high-stakes" : "";
@@ -1685,9 +1773,13 @@ function runMain(input) {
     // not just at SessionStart (session-start.js also calls this). `tkr
     // top` runs as a separate process with no view into this session's
     // live env vars, so a mid-session /effort change only reaches it via
-    // this file being rewritten on the next prompt. Best-effort — already
-    // wrapped internally, never throws.
-    persistSessionEffort(earlySid, data);
+    // this file being rewritten. Claude Code withholds both `input.effort`
+    // and CLAUDE_EFFORT from session-lifecycle hooks, so in practice this
+    // detects nothing and post-tool-call.js is what keeps the file
+    // current; clearWhenAbsent stays false so this hook's blindness
+    // cannot delete what the last tool call observed. Best-effort —
+    // already wrapped internally, never throws.
+    persistSessionEffort(earlySid, data, process.env, { clearWhenAbsent: false });
 
     // Keepalive activity touch (issue #129) — folded in from the former
     // hooks/keepalive/activity-touch.sh, whose ~9 process spawns per
@@ -1839,6 +1931,7 @@ module.exports = {
   trackSustained,
   sessionAgeSeconds,
   sessionStartStatePath,
+  runwaySuffix,
   stateLineContext,
   stateLineFilePath,
   tierCrossContext,

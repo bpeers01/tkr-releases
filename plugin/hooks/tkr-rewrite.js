@@ -14,6 +14,7 @@ const fs = require("fs");
 const path = require("path");
 const { stateDir } = require("./lib/state-dir");
 const { recordRewriteMiss } = require("./lib/rewrite-miss");
+const { tkrSpawnArgv } = require("./lib/tkr-bin");
 
 const TKR_STATE_DIR = stateDir();
 const TIMINGS_FILE = path.join(TKR_STATE_DIR, "hook-timings.jsonl");
@@ -108,33 +109,15 @@ let EXIT_STATUS = 0;
 let TIMING_NOTE = "ok";
 let finished = false;
 
-function findTkrBinary() {
-  const candidates = [];
-  if (process.env.TKR_BIN) candidates.push(process.env.TKR_BIN);
-
-  const home = process.env.HOME || process.env.USERPROFILE || "";
-  if (process.platform === "win32") {
-    if (home) candidates.push(path.join(home, ".local", "bin", "tkr.exe"));
-    if (process.env.LOCALAPPDATA) {
-      candidates.push(path.join(process.env.LOCALAPPDATA, "tkr", "bin", "tkr.exe"));
-    }
-  } else if (home) {
-    candidates.push(path.join(home, ".local", "bin", "tkr"));
-  }
-
-  candidates.push("tkr");
-  for (const candidate of candidates) {
-    if (candidate === "tkr") return candidate;
-    try {
-      if (fs.existsSync(candidate)) return candidate;
-    } catch {
-      // ignore candidate probe failures
-    }
-  }
-  return "tkr";
-}
-
-const TKR_BIN = findTkrBinary();
+// Binary resolution (and the JS-entry-point rule) lives in lib/tkr-bin.js
+// so this hook and the veto check in agent-search-inject.js cannot drift
+// on which tkr they spawn.
+// Name deliberately not TKR_*-prefixed: cmd/tkr/envvars_test.go scans this
+// tree for /TKR_[A-Z0-9_]+/ to prove every env var is registered, and a
+// constant with that shape reads as an undocumented one.
+const REWRITE_SPAWN = tkrSpawnArgv(["rewrite"]);
+// Kept for the ENOENT diagnostic below, which names the path it tried.
+const TKR_BIN = REWRITE_SPAWN.bin;
 
 // M-12: master kill switch — hoist to module top. The earlier in-loop
 // check (process.stdin.on("end")) still paid the stdin-read timeout and
@@ -341,7 +324,7 @@ process.stdin.on("end", () => {
   let rewritten = "";
   let exitCode = 1;
   try {
-    rewritten = execFileSync(TKR_BIN, ["rewrite", cmd], {
+    rewritten = execFileSync(REWRITE_SPAWN.cmd, REWRITE_SPAWN.argv.concat([cmd]), {
       encoding: "utf8",
       timeout: REWRITE_TIMEOUT_MS,
       killSignal: "SIGKILL",

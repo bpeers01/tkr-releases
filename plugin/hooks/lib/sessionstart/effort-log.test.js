@@ -59,12 +59,29 @@ test("input effort beats env effort", () => {
   });
 });
 
-test("removes a stale file when nothing is detectable", () => {
+test("clearWhenAbsent removes a stale file when nothing is detectable", () => {
   withStateDir((tmp) => {
     const fp = path.join(tmp, "effort-sid-d.json");
     fs.writeFileSync(fp, '{"effort":"max"}');
-    persistSessionEffort("sid-d", {}, {});
+    persistSessionEffort("sid-d", {}, {}, { clearWhenAbsent: true });
     assert.strictEqual(fs.existsSync(fp), false, "stale snapshot removed");
+  });
+});
+
+// Session-lifecycle hooks are never handed effort, so for them "nothing
+// detectable" is ignorance, not evidence. Erasing on it would let every
+// UserPromptSubmit delete what the preceding PostToolUse observed —
+// which is the failure mode that left `tkr top`'s EFFORT column blank.
+test("default leaves an existing snapshot alone when nothing is detectable", () => {
+  withStateDir((tmp) => {
+    const fp = path.join(tmp, "effort-sid-f.json");
+    fs.writeFileSync(fp, '{"effort":"max"}');
+    persistSessionEffort("sid-f", {}, {});
+    assert.strictEqual(
+      JSON.parse(fs.readFileSync(fp, "utf8")).effort,
+      "max",
+      "a blind caller must not erase an observed value",
+    );
   });
 });
 

@@ -67,6 +67,8 @@ const {
 } = require("./lib/posttool/sideeffects");
 const { maybeSpawnCommitRefresh } = require("./lib/posttool/commit-refresh");
 const { recordAgentCompletion } = require("./lib/agent-completions");
+const { interactiveAnswerTouch } = require("./lib/keepalive-activity");
+const { persistSessionEffort } = require("./lib/sessionstart/effort-log");
 
 const HOOK_START = Date.now();
 let TIMING_NOTE = "ok";
@@ -127,6 +129,22 @@ if (require.main === module) {
           // Refresh statusline pressure indicators on every tool call (fire-and-forget)
           spawnStatuslineUpdate(workspaceDir, sessionID, transcriptPath);
           writeLastActivity();
+          // Issue #152 item 2: keepalive activity touch for the answer to
+          // an interactive prompt. Folded in here rather than registered as
+          // a matched PostToolUse(AskUserQuestion|ExitPlanMode) entry — this
+          // hook is the plugin's UNMATCHED PostToolUse entry, so it already
+          // receives the event; a matched entry would spawn a second node
+          // process for it and would have to edit the prefix-cache-critical
+          // plugin.json to do so. Cost on every other tool call is one
+          // Set.has() on tool_name. TKR_KEEPALIVE_DISABLE is the name both
+          // READMEs already document as the keepalive kill switch; note
+          // this is currently its ONLY reader — neither watcher.sh nor
+          // `tkr keepalive watch` consults it, so setting it today
+          // suppresses this touch and nothing else. TKR_HOOKS_DISABLED
+          // (module top) remains the switch that stops everything.
+          if (process.env.TKR_KEEPALIVE_DISABLE !== "1") {
+            interactiveAnswerTouch({ rawInput: input, data: event, sid: sessionID });
+          }
           // Fire-and-forget: classify + persist the event for session-continuity
           // snapshots (PLAN-3). Detached spawn keeps the hook exit path fast.
           spawnSessionRecord(input);
@@ -154,6 +172,22 @@ function processEvent(event) {
   if (sessionID) {
     process.env.TKR_SESSION_ID = sessionID;
   }
+
+  // Issue #123: the session's actual effort reaches effort-<sid>.json
+  // from here and nowhere else. PostToolUse fires inside a tool-use
+  // context, which is the only context Claude Code populates
+  // `input.effort` / CLAUDE_EFFORT for — SessionStart and
+  // UserPromptSubmit are handed neither, so the calls there never
+  // detected anything and `tkr top`'s EFFORT column read a file that was
+  // never written. Rewritten on every tool call rather than on change so
+  // the `ts` stamp means "last observed", which is what
+  // effortAgeSecs reports; one ~100-byte atomic write, no spawn.
+  // clearWhenAbsent is true: this hook is the authoritative observer, so
+  // absence here is real evidence — a mid-session switch to a model
+  // without effort support must retire the stale value, not keep it.
+  try {
+    persistSessionEffort(sessionID, event, process.env, { clearWhenAbsent: true });
+  } catch {}
 
   // CACHE-002: warn on Edit/Write to cache-critical files (CLAUDE.md,
   // MEMORY.md, .claude/rules/*, .claude/settings*.json, plugin.json).

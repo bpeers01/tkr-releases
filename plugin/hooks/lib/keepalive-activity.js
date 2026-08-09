@@ -11,7 +11,17 @@
 // user-prompt-submit.js — which already parses the same payload — the
 // touch costs zero additional processes.
 //
-// Semantics are 1:1 with the bash hook:
+// Two entry points, one invariant — only a human can advance the marker:
+//
+//   activityTouch()          UserPromptSubmit — a typed prompt.
+//   interactiveAnswerTouch() PostToolUse(AskUserQuestion|ExitPlanMode) —
+//                            the answer to an interactive prompt, which
+//                            arrives as a tool_result and so never reaches
+//                            UserPromptSubmit (issue #152 item 2). Its
+//                            admissibility argument and its narrower guard
+//                            set are documented at the function.
+//
+// activityTouch's semantics are 1:1 with the bash hook:
 //
 // Single-fire correctness (INV-024): the keepalive wake itself produces a
 // continuation turn that re-enters UserPromptSubmit. If treated as genuine
@@ -43,6 +53,7 @@
 const fs = require("fs");
 const path = require("path");
 const { stateDir } = require("./state-dir");
+const { isSubagentContext } = require("./subagent-context");
 
 const WAKE_SENTINEL = "INTENTIONAL keepalive wake";
 const DEFAULT_REARM_GRACE_SEC = 180;
@@ -87,22 +98,46 @@ function rearmGraceSec() {
   return /^[0-9]+$/.test(raw) ? parseInt(raw, 10) : DEFAULT_REARM_GRACE_SEC;
 }
 
+// Per-sid + per-project state paths for one payload. Project key input
+// (KEEP-006): payload cwd, falling back to the hook process's own cwd. The
+// bash hook rejected a cwd containing a newline (herestring line-split
+// parse) and fell back to $PWD — keep that shape.
+function resolvePaths(data, sid) {
+  const root = stateDir();
+  const dir = path.join(root, "keepalive", sid || "default");
+  const payloadCwd =
+    data && typeof data.cwd === "string" && !data.cwd.includes("\n") ? data.cwd : "";
+  const projKey = keepaliveProjectKey(payloadCwd || process.cwd());
+  return { dir, projDir: projKey ? path.join(root, "keepalive-projects", projKey) : "" };
+}
+
+// Record genuine user activity and re-arm the watcher. The project copy
+// resets the cross-session idle clock for every watcher in this project;
+// no fired-at-style deletion for the project file — readers compare
+// timestamps (last-fired vs last-activity), never existence.
+function recordActivity({ dir, projDir }, now) {
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "activity"), `${now}\n`);
+  } catch {}
+  try {
+    fs.rmSync(path.join(dir, "fired-at"), { force: true });
+  } catch {}
+  if (projDir) {
+    try {
+      fs.mkdirSync(projDir, { recursive: true });
+      fs.writeFileSync(path.join(projDir, "last-activity"), `${now}\n`);
+    } catch {}
+  }
+}
+
 // The touch. rawInput is the unparsed stdin payload (guard 1 matches the
 // whole payload, exactly like the bash hook's whole-stdin match), data the
 // parsed object, sid the session id runMain already resolved. Best-effort
 // throughout — never throws, never blocks the prompt.
 function activityTouch({ rawInput, data, sid }) {
   try {
-    const root = stateDir();
-    const dir = path.join(root, "keepalive", sid || "default");
-
-    // Project key input (KEEP-006): payload cwd, falling back to the hook
-    // process's own cwd. The bash hook rejected a cwd containing a newline
-    // (herestring line-split parse) and fell back to $PWD — keep that shape.
-    const payloadCwd =
-      data && typeof data.cwd === "string" && !data.cwd.includes("\n") ? data.cwd : "";
-    const projKey = keepaliveProjectKey(payloadCwd || process.cwd());
-    const projDir = projKey ? path.join(root, "keepalive-projects", projKey) : "";
+    const paths = resolvePaths(data, sid);
 
     // Guard 1 — content.
     if (String(rawInput || "").includes(WAKE_SENTINEL)) return;
@@ -111,41 +146,104 @@ function activityTouch({ rawInput, data, sid }) {
     const now = Math.floor(Date.now() / 1000);
 
     // Guard 2 — per-sid recency.
-    const firedAt = readEpoch(path.join(dir, "fired-at"));
+    const firedAt = readEpoch(path.join(paths.dir, "fired-at"));
     if (firedAt > 0 && now - firedAt < grace) return;
 
     // Guard 2b — cross-session recency via project last-fired.
-    if (projDir) {
-      const projFiredAt = readEpoch(path.join(projDir, "last-fired"));
+    if (paths.projDir) {
+      const projFiredAt = readEpoch(path.join(paths.projDir, "last-fired"));
       if (projFiredAt > 0 && now - projFiredAt < grace) return;
     }
 
-    // Genuine user activity — record it and re-arm the watcher. The
-    // project copy resets the cross-session idle clock for every watcher
-    // in this project; no fired-at-style deletion for the project file —
-    // readers compare timestamps (last-fired vs last-activity), never
-    // existence.
-    try {
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(path.join(dir, "activity"), `${now}\n`);
-    } catch {}
-    try {
-      fs.rmSync(path.join(dir, "fired-at"), { force: true });
-    } catch {}
-    if (projDir) {
-      try {
-        fs.mkdirSync(projDir, { recursive: true });
-        fs.writeFileSync(path.join(projDir, "last-activity"), `${now}\n`);
-      } catch {}
-    }
+    recordActivity(paths, now);
   } catch {
     // Best-effort — malformed state must never block the prompt.
   }
 }
 
+// --- Issue #152 item 2: the answer to an interactive prompt ---
+//
+// The second entry point. A human answering an AskUserQuestion (or
+// approving/rejecting an ExitPlanMode) is genuine activity as strongly as a
+// typed prompt is — but it arrives as a tool_result, never as a
+// UserPromptSubmit, so `activityTouch` above never saw it. Consequences on
+// the live session in #152: `activity` stayed pinned at the moment the
+// question was ASKED and `fired-at` survived the answer, leaving the watcher
+// disarmed-but-fired until the next typed prompt — so a later fire could
+// stack on a session the human was actively working in.
+//
+// Same list as INTERACTIVE_TOOLS in hooks/keepalive/transcript-activity.py
+// (item 1's pending-prompt scan). Keep the two in sync: item 1 suppresses
+// the fire while one of these is outstanding, item 2 re-arms when it is
+// answered — a tool in one list and not the other is a half-handled tool.
+const INTERACTIVE_TOOLS = new Set(["AskUserQuestion", "ExitPlanMode"]);
+
+// The invariant this module rests on is "only a human can advance the
+// marker". These two tools cannot COMPLETE without a human acting on them,
+// which is what makes their PostToolUse admissible where an ordinary tool
+// result — produced by an agentic turn with no human present — is not. The
+// checks below are what keeps that true rather than assumed:
+//
+//   - PostToolUse only. A PreToolUse for the same tool means the question is
+//     about to be ASKED; no one has answered anything yet. (An older Claude
+//     Code that omits hook_event_name is accepted — the caller is registered
+//     on PostToolUse.)
+//   - Main session only. A sidechain shares the coordinator's session_id, so
+//     a worker's tool traffic would otherwise advance the coordinator's
+//     marker. Subagents are not handed these tools today; this is the guard
+//     that keeps that from being load-bearing.
+//   - A response actually came back. An absent/empty/errored tool_response
+//     is a call that never reached a human (cancelled, interrupted, failed).
+//     A *dismissal* is not that — pressing escape is a human acting — so
+//     anything non-empty and unflagged counts.
+function isInteractiveHumanAnswer(data) {
+  if (!data || typeof data !== "object") return false;
+  if (!INTERACTIVE_TOOLS.has(data.tool_name)) return false;
+  if (typeof data.hook_event_name === "string" && data.hook_event_name !== "PostToolUse") {
+    return false;
+  }
+  if (isSubagentContext(data)) return false;
+
+  const resp = data.tool_response;
+  if (resp === null || resp === undefined) return false;
+  if (typeof resp === "string") return resp.trim().length > 0;
+  if (typeof resp === "object") {
+    if (resp.error || resp.is_error) return false;
+    if (Array.isArray(resp)) return resp.length > 0;
+    return Object.keys(resp).length > 0;
+  }
+  return false;
+}
+
+// Guards 2 and 2b are deliberately NOT applied here.
+//
+// They exist for one payload shape: the keepalive wake's own continuation
+// turn, which re-enters UserPromptSubmit and would otherwise re-arm the
+// watcher every cycle (INV-024). A fresh `fired-at` is exactly the state
+// this path must clear — the human answered SECONDS after the watcher fired,
+// which is the reported failure, and a recency guard here would decline to
+// re-arm in precisely that case and leave the bug in place.
+//
+// Guard 1 stays: it costs one substring test, and a wake payload that
+// somehow reaches this path is still not a human answering anything.
+function interactiveAnswerTouch({ rawInput, data, sid }) {
+  try {
+    if (!isInteractiveHumanAnswer(data)) return false;
+    if (String(rawInput || "").includes(WAKE_SENTINEL)) return false;
+    recordActivity(resolvePaths(data, sid), Math.floor(Date.now() / 1000));
+    return true;
+  } catch {
+    // Best-effort — a keepalive marker is never worth failing a tool call.
+    return false;
+  }
+}
+
 module.exports = {
   activityTouch,
+  interactiveAnswerTouch,
+  isInteractiveHumanAnswer,
   keepaliveProjectKey,
+  INTERACTIVE_TOOLS,
   WAKE_SENTINEL,
   DEFAULT_REARM_GRACE_SEC,
 };

@@ -189,7 +189,7 @@ test("INV-023: ledger row written for every Agent/Task spawn", () => {
     // none of those fields appear — which is itself the v2 contract:
     // absent plan_id on a v2 row means "no plan was current", not
     // "this writer never recorded one".
-    assert.strictEqual(r.schema_version, 4);
+    assert.strictEqual(r.schema_version, 6);
     assert.ok(!("plan_id" in r), "unplanned spawn must not carry routing fields");
     assert.ok(!("route_followed" in r), "unplanned spawn must not claim a follow");
     assert.ok(r.at, "expected ISO timestamp");
@@ -475,41 +475,99 @@ test("autoroute: offer-tier verdict (recommend != delegate) does not fire", () =
 
 // ── ADR-0033 Phase 4: spawn-time veto ────────────────────────────────────
 //
-// vetoCheck() spawns the real `tkr` binary by bare name (no TKR_BIN
-// indirection — see cmd/tkr/cmd_route_vetocheck.go's doc comment), so
-// these tests shim it by putting a fake executable named "tkr" first on
-// PATH. POSIX shebang + chmod 0o755, same convention
-// hooks/tkr-rewrite.fastpath.test.js already uses for its own tkr shim —
-// there is no other precedent in this repo. Windows note: without
-// shell:true (which vetoCheck() deliberately does not set, matching the
-// production spawnSync call byte for byte), Node's child_process only
-// auto-resolves a bare command name to .exe/.com, never .cmd/.bat — so
-// this shim mechanism is POSIX-only, exactly like the precedent it
-// copies. CI only runs `node --test` on ubuntu-latest (ci.yml), so this
-// is the authoritative platform for these tests.
+// vetoCheck() resolves the binary through lib/tkr-bin.js, so these tests
+// shim it by pointing TKR_BIN at a JS file: the resolver launches a
+// .js/.cjs/.mjs target as `node <path>`, which runs identically on every
+// platform.
+//
+// This replaces a PATH shim — an extensionless `#!/bin/sh` file named
+// `tkr` placed first on PATH — that was POSIX-only by construction.
+// Without shell:true (which vetoCheck deliberately does not set, matching
+// production byte for byte) Node resolves a bare command name only to
+// .exe/.com on Windows, and refuses .cmd/.bat outright. On Windows the
+// shim therefore could not execute, and three of the four tests assert
+// that NO deny happened — trivially true when the check cannot run — so
+// they passed vacuously and would have kept passing with the veto deleted.
+// That is why #143 finding 1 could not be validated on the platform that
+// has the problem, and why the fix had to start here rather than at the
+// timeout (see the issue thread).
 
-function withTkrShim(responseObj) {
+function withTkrShim(responseObj, { delayMs = 0 } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-veto-shim-"));
-  const shim = path.join(dir, "tkr");
-  fs.writeFileSync(shim, `#!/bin/sh\necho '${JSON.stringify(responseObj)}'\n`);
-  fs.chmodSync(shim, 0o755);
+  const shim = path.join(dir, "tkr-shim.js");
+  // Drains stdin first: vetoCheck writes the VetoInput payload, and a shim
+  // that exits without reading it makes the parent's write fail with EPIPE
+  // on some platforms — which would look like an unrelated transport error.
+  const body =
+    `process.stdin.resume();\n` +
+    `process.stdin.on("data", () => {});\n` +
+    `const reply = () => process.stdout.write(${JSON.stringify(JSON.stringify(responseObj))} + "\\n");\n` +
+    (delayMs > 0 ? `setTimeout(reply, ${delayMs});\n` : `reply();\n`);
+  fs.writeFileSync(shim, body);
   return {
     dir,
-    env: { PATH: dir + path.delimiter + (process.env.PATH || "") },
+    env: { TKR_BIN: shim },
     cleanup: () => {
       try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
     },
   };
 }
 
-// pathWithoutTkr is a PATH that cannot resolve "tkr" anywhere — an empty
-// temp directory, not a filtered copy of the real PATH, so the test does
-// not depend on incidental machine state (a dev build of tkr sitting in
-// this very repo would otherwise still resolve on some platforms).
+// pathWithoutTkr makes the binary unresolvable. resolveTkrBin has THREE
+// candidate sources and all three have to miss, or the "unreachable" case
+// cannot be expressed:
+//
+//   1. TKR_BIN            → names a file that does not exist
+//   2. the platform install path → derived from HOME/USERPROFILE/
+//                           LOCALAPPDATA, so those are pointed at the empty
+//                           temp dir too
+//   3. bare "tkr" via PATH → PATH is that same empty temp dir
+//
+// Emptying only PATH is not enough on Windows, where a real installed
+// tkr.exe lives under %USERPROFILE%\.local\bin or %LOCALAPPDATA%: candidate
+// 2 resolves, the check answers, and a test asserting "no verdict at all"
+// fails on the one platform finding 1 is about. Same neutering that
+// lib/tkr-bin.test.js already does by passing its own HOME.
+//
+// Not a filtered copy of the real PATH — a dev build of tkr sitting in this
+// very repo would otherwise still resolve on some platforms and the test
+// would depend on incidental machine state.
 function pathWithoutTkr() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-noexist-"));
   return {
-    env: { PATH: dir },
+    env: {
+      PATH: dir,
+      TKR_BIN: path.join(dir, "definitely-not-here"),
+      HOME: dir,
+      USERPROFILE: dir,
+      LOCALAPPDATA: dir,
+    },
+    cleanup: () => {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+    },
+  };
+}
+
+// withStateDir gives the hook a private TKR_STATE_DIR, optionally
+// pre-seeded with the work-mode cache that condition 3 of the fail-closed
+// scope reads (lib/veto-fallback.js).
+//
+// Every veto test that can reach a timeout MUST use this. Without it
+// stateDir() resolves to the developer's real ~/.tkr, so whether a timeout
+// denies would depend on whether that machine happens to hold a cached
+// enforcing mode — the test would pass or fail on incidental state, and it
+// would do so in the direction that hides a regression.
+function withStateDir(mode) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-veto-state-"));
+  if (mode) {
+    fs.writeFileSync(
+      path.join(dir, "veto-mode.json"),
+      JSON.stringify({ mode, at: new Date().toISOString() }),
+    );
+  }
+  return {
+    dir,
+    env: { TKR_STATE_DIR: dir },
     cleanup: () => {
       try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
     },
@@ -579,7 +637,11 @@ test("veto: fail-open when the tkr binary is unreachable — spawn proceeds, no 
   const noTkr = pathWithoutTkr();
   const tmp = withTempLedger();
   try {
-    const res = runHook(tkrEvent(MUTATING_PROMPT), { ...tmp.env, PATH: noTkr.env.PATH });
+    // Both halves of pathWithoutTkr, not just PATH: on Windows tkr-bin.js
+    // resolves the platform install path before it ever falls back to a
+    // bare name, so an emptied PATH alone leaves a real installed binary
+    // reachable and the check answers instead of failing to run.
+    const res = runHook(tkrEvent(MUTATING_PROMPT), { ...tmp.env, ...noTkr.env });
     assert.strictEqual(res.status, 0, `hook itself must still exit 0: ${res.stderr}`);
     const out = JSON.parse(res.stdout || "{}");
     assert.ok(!out.decision, "a missing/unreachable binary must never block the spawn");
@@ -587,9 +649,230 @@ test("veto: fail-open when the tkr binary is unreachable — spawn proceeds, no 
     const rows = readLedger(tmp.ledger);
     assert.strictEqual(rows.length, 1);
     assert.ok(!("veto_checked" in rows[0]), "no verdict at all — the check could not run");
+    assert.strictEqual(
+      rows[0].veto_unavailable,
+      "unreachable",
+      "a check that was attempted and could not run must say so",
+    );
   } finally {
     noTkr.cleanup();
     tmp.cleanup();
+  }
+});
+
+// ── #143 finding 1: the fail-open is now measurable ──────────────────────
+//
+// Fail-open behavior is unchanged and must stay unchanged — these assert
+// that no denial happens. What is new is that the ledger distinguishes
+// "nobody asked" from "we asked and got no answer". On Windows, where a
+// bare spawn degrades to 4-6s under multi-session load against a 500ms
+// budget, the timeout case is the one that actually fires, and it used to
+// be indistinguishable from a spawn the veto has no opinion about.
+
+test("veto: a timed-out check fails open AND records veto_unavailable:timeout", () => {
+  // Shim sleeps well past the budget the hook is given.
+  const shim = withTkrShim({ verdict: "deny", enforce: true, evaluated: true }, { delayMs: 2000 });
+  const tmp = withTempLedger();
+  // No cached mode — a fresh install has no evidence that this environment
+  // enforces anything, so the fail-closed branch must not engage.
+  const state = withStateDir(null);
+  try {
+    const res = runHook(tkrEvent(MUTATING_PROMPT), {
+      ...tmp.env,
+      ...shim.env,
+      ...state.env,
+      TKR_VETO_TIMEOUT_MS: "150",
+    });
+    assert.strictEqual(res.status, 0, `hook must still exit 0: ${res.stderr}`);
+    const out = JSON.parse(res.stdout || "{}");
+    assert.ok(!out.decision, "a timeout with no cached enforcing mode stays fail-open");
+    assert.strictEqual(out.hookSpecificOutput?.updatedInput?.run_in_background, false);
+    const rows = readLedger(tmp.ledger);
+    assert.strictEqual(rows.length, 1);
+    assert.ok(!("veto_checked" in rows[0]), "a timeout produced no verdict");
+    assert.strictEqual(rows[0].veto_unavailable, "timeout");
+    assert.ok(!("veto_local_deny" in rows[0]), "nothing was denied locally");
+  } finally {
+    shim.cleanup();
+    tmp.cleanup();
+    state.cleanup();
+  }
+});
+
+test("veto: a timeout DENIES the mutation-to-read-only class once a mode is known", () => {
+  // The whole point of finding 1's second half. Everything here is the
+  // fail-open case above plus one fact: a previous check in this
+  // environment reported an enforcing mode. That is the evidence the hook
+  // needs to treat an unanswered check as a hung binary rather than an
+  // unconfigured install, and to refuse the one spawn class whose fail-open
+  // cost cannot be recovered — a read-only profile handed a mutating task,
+  // which either never happens or lands unreviewed through Bash.
+  const shim = withTkrShim({ verdict: "deny", enforce: true, evaluated: true }, { delayMs: 2000 });
+  const tmp = withTempLedger();
+  const state = withStateDir("advisory");
+  try {
+    const res = runHook(tkrEvent(MUTATING_PROMPT), {
+      ...tmp.env,
+      ...shim.env,
+      ...state.env,
+      TKR_VETO_TIMEOUT_MS: "150",
+    });
+    assert.strictEqual(res.status, 0, `hook must still exit 0: ${res.stderr}`);
+    const out = JSON.parse(res.stdout || "{}");
+    assert.strictEqual(out.decision, "block", "this is the class a timeout must not wave through");
+    assert.strictEqual(out.hookSpecificOutput?.permissionDecision, "deny");
+    assert.ok(
+      !out.hookSpecificOutput?.updatedInput,
+      "a denied call is never also rewritten",
+    );
+    assert.match(
+      out.reason || "",
+      /read-only/i,
+      "the reason must tell the coordinator what to re-issue, not just that it failed",
+    );
+    const rows = readLedger(tmp.ledger);
+    assert.strictEqual(rows.length, 1);
+    // The honesty half: policy never answered, so the row must not claim a
+    // check ran. The denial is recorded as what it is — the hook's own.
+    assert.ok(!("veto_checked" in rows[0]), "no policy verdict exists to report");
+    assert.ok(!("veto_denied" in rows[0]), "veto_denied means POLICY refused; it did not");
+    assert.strictEqual(rows[0].veto_unavailable, "timeout");
+    assert.strictEqual(rows[0].veto_local_deny, true);
+    assert.strictEqual(rows[0].veto_local_reason, "veto_check_timeout");
+  } finally {
+    shim.cleanup();
+    tmp.cleanup();
+    state.cleanup();
+  }
+});
+
+test("veto: a timeout under a non-enforcing cached mode still fails open", () => {
+  // observe computes verdicts but acts on none of them, so a timeout under
+  // it has nothing to enforce and denying would invent policy the operator
+  // deliberately did not ask for.
+  const shim = withTkrShim({ verdict: "deny", enforce: true, evaluated: true }, { delayMs: 2000 });
+  const tmp = withTempLedger();
+  const state = withStateDir("observe");
+  try {
+    const res = runHook(tkrEvent(MUTATING_PROMPT), {
+      ...tmp.env,
+      ...shim.env,
+      ...state.env,
+      TKR_VETO_TIMEOUT_MS: "150",
+    });
+    const out = JSON.parse(res.stdout || "{}");
+    assert.ok(!out.decision, "observe never blocks, timeout or not");
+    const rows = readLedger(tmp.ledger);
+    assert.ok(!("veto_local_deny" in rows[0]));
+  } finally {
+    shim.cleanup();
+    tmp.cleanup();
+    state.cleanup();
+  }
+});
+
+test("veto: a timeout on a read-only task is allowed even in an enforcing mode", () => {
+  // INV-088: the advise rubric tells coordinators to STATE constraints, so
+  // well-written read-only contracts routinely NAME mutation verbs in order
+  // to forbid them. If the detector ignored negation, the best-written
+  // spawn contracts would be exactly the ones a timeout blocked.
+  const shim = withTkrShim({ verdict: "deny", enforce: true, evaluated: true }, { delayMs: 2000 });
+  const tmp = withTempLedger();
+  const state = withStateDir("advisory");
+  try {
+    const res = runHook(
+      tkrEvent("Read internal/route/veto.go and summarize it. Do not edit anything."),
+      { ...tmp.env, ...shim.env, ...state.env, TKR_VETO_TIMEOUT_MS: "150" },
+    );
+    const out = JSON.parse(res.stdout || "{}");
+    assert.ok(!out.decision, "a stated no-edit constraint must not read as mutation intent");
+    const rows = readLedger(tmp.ledger);
+    assert.ok(!("veto_local_deny" in rows[0]));
+    assert.strictEqual(rows[0].veto_unavailable, "timeout");
+  } finally {
+    shim.cleanup();
+    tmp.cleanup();
+    state.cleanup();
+  }
+});
+
+test("veto: TKR_VETO_TIMEOUT_MS raises the budget — the same slow check now completes and denies", () => {
+  // The delay exceeds the 500ms DEFAULT budget, so this deny is reachable
+  // only because the override raised it. That is what makes this a timeout
+  // test rather than a "does the shim work" test — and it is the property a
+  // Windows operator needs, where the default is the thing that fails.
+  const shim = withTkrShim({
+    verdict: "deny",
+    reason: "mutation_to_readonly_worker",
+    enforce: true,
+    evaluated: true,
+    mode: "assisted",
+  }, { delayMs: 1200 });
+  const tmp = withTempLedger();
+  try {
+    const res = runHook(tkrEvent(MUTATING_PROMPT), {
+      ...tmp.env,
+      ...shim.env,
+      TKR_VETO_TIMEOUT_MS: "8000",
+    });
+    assert.strictEqual(res.status, 0);
+    const out = JSON.parse(res.stdout || "{}");
+    assert.strictEqual(out.decision, "block", "the verdict arrives when the budget allows it");
+    const rows = readLedger(tmp.ledger);
+    assert.strictEqual(rows[0].veto_checked, true);
+    assert.strictEqual(rows[0].veto_denied, true);
+    assert.ok(!("veto_unavailable" in rows[0]), "a completed check is not unavailable");
+  } finally {
+    shim.cleanup();
+    tmp.cleanup();
+  }
+});
+
+test("veto: an unusable response records veto_unavailable:bad_response, not a denial", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-veto-junk-"));
+  const shim = path.join(dir, "tkr-shim.js");
+  fs.writeFileSync(
+    shim,
+    `process.stdin.resume();\nprocess.stdin.on("data", () => {});\nprocess.stdout.write("not json at all\\n");\n`,
+  );
+  const tmp = withTempLedger();
+  try {
+    const res = runHook(tkrEvent(MUTATING_PROMPT), { ...tmp.env, TKR_BIN: shim });
+    assert.strictEqual(res.status, 0);
+    const out = JSON.parse(res.stdout || "{}");
+    assert.ok(!out.decision, "unparseable output is not a denial");
+    const rows = readLedger(tmp.ledger);
+    assert.strictEqual(rows[0].veto_unavailable, "bad_response");
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+    tmp.cleanup();
+  }
+});
+
+test("veto: never-attempted checks stay silent — no veto_unavailable for non-tkr profiles or the kill switch", () => {
+  // The exclusivity that lets a v4 reader keep its meaning: absence of BOTH
+  // keys still means "no check was attempted". If a never-attempted check
+  // wrote veto_unavailable, every ordinary Explore spawn would look like a
+  // veto failure and the new counter would be pure noise.
+  for (const [label, event, extraEnv] of [
+    ["non-tkr profile", { tool_name: "Agent", session_id: "s", tool_input: { subagent_type: "Explore", prompt: MUTATING_PROMPT, run_in_background: true } }, {}],
+    ["kill switch", tkrEvent(MUTATING_PROMPT), { TKR_WORK_VETO_DISABLED: "1" }],
+  ]) {
+    const shim = withTkrShim({ verdict: "deny", enforce: true, evaluated: true });
+    const tmp = withTempLedger();
+    try {
+      runHook(event, { ...tmp.env, ...shim.env, ...extraEnv });
+      const rows = readLedger(tmp.ledger);
+      assert.strictEqual(rows.length, 1, `${label}: expected one row`);
+      assert.ok(!("veto_checked" in rows[0]), `${label}: no check ran`);
+      assert.ok(
+        !("veto_unavailable" in rows[0]),
+        `${label}: a check that was never attempted has nothing to report`,
+      );
+    } finally {
+      shim.cleanup();
+      tmp.cleanup();
+    }
   }
 });
 

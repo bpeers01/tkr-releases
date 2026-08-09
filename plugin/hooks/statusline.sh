@@ -492,7 +492,13 @@ if command -v tkr &>/dev/null; then
           _tkr_val="${_tkr_val#\'}"
           _tkr_val="${_tkr_val%\'}"
           # Undo shellQuote's '\'' dance for embedded single quotes.
-          _tkr_val="${_tkr_val//\'\\\'\'/\'}"
+          # The pattern is DOUBLE-QUOTED deliberately. The backslash-escaped
+          # form — ${_tkr_val//\'\\\'\'/\'} — matches on bash 5.2.21 (Linux,
+          # where this was written and where CI runs) but silently fails to
+          # substitute on bash 5.2.15 under Git for Windows, leaving the
+          # literal '\'' in the rendered value. Quoting the pattern makes it
+          # an unambiguous literal on both.
+          _tkr_val="${_tkr_val//"'\\''"/"'"}"
           ;;
       esac
       declare "$_tkr_name=$_tkr_val" 2>/dev/null
@@ -508,6 +514,18 @@ if [ "$SESSION_PCT" -gt "$PRESSURE_PCT" ] 2>/dev/null; then
 fi
 
 # ── Classify pressure ────────────────────────────────────────────────
+# FROZEN LEGACY (PACE-001). These raw-percentage bands do NOT apply the
+# pace/runway adjustment that `tkr statusline render` does — 85% with hours
+# to reset still renders CRIT here. That is deliberate, not an oversight:
+# this renderer only runs as the installer's fallback for a binary too old
+# to serve `statusline render` (install.sh:380, install.ps1), and such a
+# binary has no pace-aware classifier either. Raw bands here therefore MATCH
+# the classifier that install is actually running.
+#
+# Do not port the runway math into bash — that would be a third copy
+# (internal/signals/pace.go, hooks/user-prompt-submit.js) serving installs
+# that cannot benefit from it. This block retires with the renderer, when
+# the minimum supported binary gains `statusline render`.
 PRESSURE_LABEL=""
 PRESSURE_COLOR="$GREEN"
 if [ "$PRESSURE_PCT" -ge 85 ] 2>/dev/null; then

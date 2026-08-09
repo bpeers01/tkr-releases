@@ -481,3 +481,33 @@ test("PR5-c2 V2: ctxBreakpointContext reads dedup state fresh inside function bo
   );
 });
 
+
+// Issue #123: `tkr top`'s EFFORT column reads effort-<sid>.json, and
+// PostToolUse is the only hook Claude Code hands `input.effort` to —
+// SessionStart and UserPromptSubmit are session-lifecycle hooks and get
+// neither the field nor CLAUDE_EFFORT, which is why the column read a
+// file nobody wrote. Spawns the real hook so the write is exercised end
+// to end rather than through the helper it delegates to.
+test("PostToolUse persists input.effort.level to effort-<sid>.json", () => {
+  const { spawnSync } = require("node:child_process");
+  withTempStateDir((dir) => {
+    const sid = "sid-posttool-effort";
+    const res = spawnSync(process.execPath, [path.join(__dirname, "post-tool-call.js")], {
+      input: JSON.stringify({
+        session_id: sid,
+        hook_event_name: "PostToolUse",
+        tool_name: "Read",
+        effort: { level: "high" },
+        tool_input: {},
+        tool_response: { content: "" },
+      }),
+      env: { ...process.env, TKR_STATE_DIR: dir, CLAUDE_EFFORT: "", CLAUDE_CODE_EFFORT_LEVEL: "" },
+      encoding: "utf8",
+    });
+    assert.strictEqual(res.status, 0, `hook exited nonzero: ${res.stderr}`);
+    const parsed = JSON.parse(fs.readFileSync(path.join(dir, `effort-${sid}.json`), "utf8"));
+    assert.strictEqual(parsed.effort, "high");
+    assert.strictEqual(parsed.source, "hook_input.effort.level");
+    assert.ok(parsed.ts, "ts must be stamped so effortAgeSecs means last-observed");
+  });
+});

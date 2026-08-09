@@ -9,8 +9,8 @@ InstructionsLoaded).
 | Hook file | Event | Purpose |
 |-----------|-------|---------|
 | `tkr-rewrite.js` | PreToolUse(Bash) | Rewrite raw bash → `tkr <cmd>` for filtering |
-| `agent-search-inject.js` | PreToolUse(Agent) | Auto-inject `tkr search` into Agent prompts; opt-in autoroute (COMPETE-002): downgrade Explore spawns to haiku on classifier `delegate_via` verdict; work routing (native-work-routing §13): record planned-vs-actual on every spawn, and at `mode = "assisted"` fill a compatible Agent call from the current work plan; spawn-time veto (ADR-0033): for `tkr:*` types only, ask `tkr route veto-check` whether the profile's own contract forbids this spawn and block it in an enforcing mode. Fails open in every direction — unreachable binary, non-zero exit, unparseable JSON all read as allow — because a stuck denial is worse than an unenforced one |
-| `post-tool-call.js` | PostToolUse | Compress Bash output via TOML filter pipeline; on Agent/Task events also append one agent-completion row (#134 R0.1, `lib/agent-completions.js`) |
+| `agent-search-inject.js` | PreToolUse(Agent) | Auto-inject `tkr search` into Agent prompts; opt-in autoroute (COMPETE-002): downgrade Explore spawns to haiku on classifier `delegate_via` verdict; work routing (native-work-routing §13): record planned-vs-actual on every spawn, and at `mode = "assisted"` fill a compatible Agent call from the current work plan; spawn-time veto (ADR-0033): for `tkr:*` types only, ask `tkr route veto-check` whether the profile's own contract forbids this spawn and block it in an enforcing mode. Fails open for every failure meaning the check COULD NOT RUN — unreachable binary, non-zero exit, unparseable JSON all read as allow — because a machine without a working tkr must not have its spawns depend on one; each names itself in the ledger's `veto_unavailable` so an open failure is measurable rather than silent (#143 finding 1). A TIMEOUT is the scoped exception: the budget is measured (`TKR_VETO_TIMEOUT_MS`, default 2500ms) so exceeding it means hung rather than busy, and it then fails CLOSED for one class only — read-only profile **and** mutation intent **and** a previously observed enforcing mode. Everything else still fails open. See `lib/veto-fallback.js`, which owns the budget so the value and the rule for what a timeout MEANS cannot drift apart. The binary is resolved via `lib/tkr-bin.js`, shared with `tkr-rewrite.js` |
+| `post-tool-call.js` | PostToolUse | Compress Bash output via TOML filter pipeline; on Agent/Task events also append one agent-completion row (#134 R0.1, `lib/agent-completions.js`); on AskUserQuestion/ExitPlanMode events perform the keepalive interactive-answer touch (`lib/keepalive-activity.js` `interactiveAnswerTouch`, issue #152 item 2). The touch lives here rather than in a matched `PostToolUse(AskUserQuestion\|ExitPlanMode)` entry because this is the plugin's UNMATCHED PostToolUse entry — it already receives the event, so a matched entry would only add a second node spawn and an edit to the prefix-cache-critical `plugin.json`. Cost on every other tool call is one `Set.has()` |
 | `post-tool-batch.js` | PostToolBatch | One first-batch row per prompt classifying the coordinator's first successful action (#134 R0.2). Event exists on CC ≥2.1.x (verified against the 2.1.221 binary; payload `tool_calls`); older builds never fire it and the read side must report that as "unavailable", never as inactivity |
 | `cli-corrections-injector.js` | PostToolUse(Bash) | Inject cli-corrections on Bash failure (PD-7) |
 | `session-start.js` | SessionStart | Brevity reinforcement + tkr awareness banner |
@@ -20,11 +20,11 @@ InstructionsLoaded).
 | `instructions-loaded.js` | InstructionsLoaded | Telemetry to `~/.tkr/instructions-load.jsonl` |
 | `cache-bust-warn.js` | PreToolUse(Edit\|Write) | Warn before editing prefix-cache-critical files (PlaybookV2 L5) |
 | `long-runner-warn.js` | PreToolUse(Bash) | Warn on watch/serve/follow commands that outlive the cache TTL (L4) |
-| `skill-invoked.js` | PreToolUse(Skill) | Skill-invocation telemetry → `instructions-load.jsonl`. Schema v2 resolves `invocation_source` to `manual`/`auto` from the per-turn slash marker instead of always writing `unknown` |
+| `skill-invoked.js` | PreToolUse(Skill) | Skill-invocation telemetry → `instructions-load.jsonl`. Schema v2 resolves `invocation_source` to `manual`/`auto` from the per-turn slash marker instead of always writing `unknown`. Schema v3 (INV-095) adds the bundled-skill payload gate: no longer pure observability. Bundled skills inject their whole reference tree as a **user-role text block, not a tool_result** (the result is ~27 chars), so no `PostToolUse` fires and no tkr filter can ever see it — the measured `claude-api` injection cost ~250K tokens against API ground truth and stays in the cached prefix for the rest of the session. Policy + measurement live in `lib/skill-bundle.js`; the hook only does I/O and emits. Threshold-based, never name-based. Default mode is **ask** (`permissionDecision:"ask"`, the human decides): the gate fires on 3.2% of Skill dispatches in the measured population (5 of 156 across 314 sessions), which is a targeted interruption rather than prompt fatigue, and `warn` offers no decision point at all — `systemMessage` renders only after the hook returns and the payload lands regardless. `TKR_SKILL_GATE=warn` de-escalates to notify-only, `=deny` blocks outright; both the ask and deny texts carry the on-disk file index so a refusal leaves the model able to read what it needed. An **absent** setting means `ask`; a **malformed** one degrades to `warn` — the weakest acting mode, never the strongest. Cost is always reported as a **range**, never a point (see `costRange()`): the tree overstates the payload while `bytes/4` understates these tokens by ~45%, and the two errors do not cancel. A **manual `/skill` is never gated** — it is the escape hatch the denial text points at. Every failure path allows |
 | `subagent-outcome.js` | SubagentStop | Bounded outcome row per observed subagent stop → `subagent-outcomes.jsonl`. Records `completion:"stopped"`, never "completed" — the payload carries no status. Schema v2 also parses the worker's fenced `tkr-handoff` trailer into optional `declared_*` fields: a claim channel, not a verification one — `verification` stays `"not_observed"` on every row. Does not join; `tkr route stats` does that at read time |
 | `session-summary.js` | Stop | End-of-session value report + statusline payload cleanup |
 | `team-push.js` | SessionEnd | Debounced team telemetry push (opt-in; `TKR_TEAM_DISABLE=1`) |
-| `keepalive/*.sh` | Stop / SessionEnd | Keepalive v2: async-rewake watcher, cleanup (activity signal moved to `user-prompt-submit.js`; `resolve-project.sh` key must stay byte-identical to `lib/keepalive-activity.js`) |
+| `keepalive/*.sh` | Stop / SessionEnd | Keepalive v2: async-rewake watcher, cleanup (activity signal moved to `user-prompt-submit.js` + `post-tool-call.js`; `resolve-project.sh` key must stay byte-identical to `lib/keepalive-activity.js`) |
 | `statusline.{sh,ps1}` | (statusLine) | Pressure indicators in prompt box |
 
 ## Hook contract
@@ -72,6 +72,21 @@ InstructionsLoaded).
   edited; that is the only thing standing between these files and silent
   divergence. New per-file work in the classifier must stay I/O-free —
   the budget already pays a read and a stat per file.
+- **Only a human may advance the keepalive activity marker.** That
+  invariant is what makes `keepalive/<sid>/activity` an idle clock rather
+  than a liveness ping, and it is why `lib/keepalive-activity.js` has
+  exactly two entry points: a typed prompt (UserPromptSubmit) and the
+  answer to an interactive prompt (`interactiveAnswerTouch`, admissible
+  only because `AskUserQuestion`/`ExitPlanMode` cannot COMPLETE without a
+  human acting). Any third caller must carry the same argument, and must
+  reject subagent sidechains — they share the coordinator's `session_id`,
+  so a worker's tool traffic reaches the human's marker
+  (`lib/subagent-context.js`). `INTERACTIVE_TOOLS` is duplicated in
+  `keepalive/transcript-activity.py`; a tool in one list and not the other
+  is half-handled — suppressed while pending but never re-arming on
+  answer, or the reverse. The parity test in
+  `lib/keepalive-interactive-answer.test.js` reads the Python tuple
+  directly, so a one-sided edit fails.
 - **Hot-path JSONL writers must rotate before append.** Any file
   appended on every hook fire (e.g. `hook-timings.jsonl`,
   `decisions.jsonl`) calls `rotateIfLarge(target)` from
@@ -93,6 +108,36 @@ Convention: `~/.tkr/<feature>.{json,jsonl}` (honor `TKR_STATE_DIR` env):
   whole distinction between "the skill triggered" and "the user typed the
   command", so a ledger that says `unknown` everywhere cannot measure
   triggering at all.
+- `skill-bundles.json` — measured size of each skill's bundled reference
+  tree, keyed by skill name (INV-095). Feeds the `skill-invoked.js` gate
+  so the hot path is one small read instead of a temp-dir walk: cold
+  measure of the real 65-file `claude-api` tree is ~6.5ms, warm ~0.4ms.
+  Misses are cached too — plugin skills (`tkr:*`, `blueprint:*`) ship no
+  bundle and must not pay a walk per dispatch — but only for
+  `MISS_TTL_MS` (1h), so a CLI upgrade that adds a bundle is picked up
+  the same day rather than never. A positive entry is trusted only while
+  the directory it names still exists, since an upgrade relocates the
+  tree under a new `<version>/<hash>`. Sizes are `bytes/4` from `stat`;
+  file contents are never read. **The tree is not an upper bound on the
+  payload** — it bounds only the file-body portion, and only loosely.
+  Verified against the transcript for the measured `claude-api`
+  injection: 32 of 65 files shipped (all of `shared/`, all of the ONE
+  detected language subtree), each **whole and contiguous** inside a
+  `<doc path="...">` wrapper — nothing on this path is chunked or
+  truncated — while 33 files (238,495 bytes, the other seven languages)
+  did not ship. Against that, the payload adds ~70K chars that are in no
+  tree file at all: `SKILL.md` ships inside the CLI binary rather than
+  on disk, plus trailing guidance, the wrappers, and a `## User Request`
+  trailer. Net for that event: 699,096 chars injected against an
+  867,776-byte tree — the skipped languages happened to exceed the
+  framing, which is arithmetic, not a guarantee. The stored number is
+  also low in the token dimension: the same block was charged ~253,800
+  tokens, i.e. **2.754 chars/token**, so `bytes/4` under-predicts by
+  ~45%. Stored size is therefore one end of a range, never a ceiling,
+  and gate text quotes both ends. That same estimator is
+  `internal/tracking/tracker.go:586`, used by `internal/bench/` —
+  whether it under-counts there too is open, and one sample is not a
+  calibration.
 - `slash-marker-<sid>.json` — one-turn record that the user's prompt was
   a slash command, written by `user-prompt-submit.js` (the only hook that
   sees the raw prompt) and read by `skill-invoked.js` (which fires later
@@ -109,7 +154,7 @@ Convention: `~/.tkr/<feature>.{json,jsonl}` (honor `TKR_STATE_DIR` env):
   out — the follow-rate denominator; a plan that stayed silent leaves no
   row). Writers must use `ts`, not `at`: every reader keys on `ts`, so a
   row with `at` has no timestamp as far as any window is concerned.
-- `task-spawns.jsonl` — one row per Agent/Task dispatch (schema v4).
+- `task-spawns.jsonl` — one row per Agent/Task dispatch (schema v5).
   Carries `prompt_id` + `tool_use_id` (lifecycle join anchors, always
   written, empty when Claude Code supplied none) and, when a plan was
   current, planned-vs-requested-vs-emitted routing fields. Never
@@ -124,7 +169,32 @@ Convention: `~/.tkr/<feature>.{json,jsonl}` (honor `TKR_STATE_DIR` env):
   parsing: absence of `veto_checked` on a v4 row means no check ran (a
   non-`tkr:*` profile, or the kill switch), which is a fact; absence on a
   v3-or-earlier row means this writer predated the concept and cannot be
-  read as "not checked". Kill switch: `TKR_WORK_VETO_DISABLED=1`.
+  read as "not checked". v5 splits that v4 "fact" in two with
+  `veto_unavailable` (`timeout` | `unreachable` | `bad_response`), mutually
+  exclusive with `veto_checked`: a check that was ATTEMPTED and produced no
+  verdict. Fail-open behavior is unchanged — v4 simply could not tell
+  "nobody asked" from "we asked and got no answer", and on Windows the
+  second is the common one (a bare spawn degrades to 4-6s under
+  multi-session load against the 500ms budget). Absence of BOTH keys keeps
+  its v4 meaning, so nothing that reads this ledger changes in step.
+  v6 (#143 finding 1, second half) adds `veto_local_deny` +
+  `veto_local_reason`: the hook denied this spawn ITSELF after a timeout,
+  with no policy verdict behind it. Independent of both keys above rather
+  than exclusive with either — it accompanies `veto_unavailable:"timeout"`
+  when neither check answered, and `veto_checked` when one answered and the
+  other timed out. Never fold it into `veto_denied`: that means
+  route.VetoCheck refused the spawn, this means route.VetoCheck was
+  unreachable and the hook acted on a cached mode plus a keyword scan.
+  Summing the two overstates what the veto adjudicated, in exactly the
+  situation where it adjudicated least. Kill switch:
+  `TKR_WORK_VETO_DISABLED=1`; budget: `TKR_VETO_TIMEOUT_MS`.
+- `veto-mode.json` — the last work mode a veto check actually REPORTED,
+  written by `agent-search-inject.js` on every answered verdict and read by
+  `lib/veto-fallback.js` on the timeout path. Exists so the fail-closed
+  branch can ask "does this install enforce?" without a second JS reader of
+  the Go config. Absence is decisive in the safe direction: no cache, one
+  older than 24h, or an unreadable one all mean "no evidence", so the first
+  timeout on a fresh install never denies.
 - `subagent-outcomes.jsonl` — one row per observed SubagentStop (schema
   v2). The closing half of the spawn→outcome join. Deliberately excludes
   `last_assistant_message` and `transcript_path`: neither is needed to

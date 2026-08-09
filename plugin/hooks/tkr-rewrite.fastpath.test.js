@@ -17,6 +17,24 @@ const path = require("node:path");
 
 const HOOK = path.join(__dirname, "tkr-rewrite.js");
 
+// Windows: every test below observes "did it spawn" through a shim that is
+// an extensionless `#!/bin/sh` file. Windows has no shebang dispatch and
+// child_process resolves a bare name only to .exe/.com, so the shim never
+// executes, spawns.log is never written, and every spawn-expecting
+// assertion sees []. Skip the file rather than fail it — and skip it
+// WHOLESALE, including the one test that expects no spawn: that test
+// passes on Windows for the wrong reason (nothing can spawn there), so
+// leaving it enabled reports green for a fast-path that could be entirely
+// broken. A skip says "unverified here"; a vacuous pass lies.
+// CI runs `node --test` on ubuntu-latest only (ci.yml lint-scripts), which
+// is where these actually gate.
+if (process.platform === "win32") {
+  test("tkr-rewrite fast-path (POSIX-only shim)", {
+    skip: "POSIX-only: shim is an extensionless #!/bin/sh file; gated on ubuntu-latest in CI",
+  }, () => {});
+  return;
+}
+
 function setup(t, { manifest } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-fastpath-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));

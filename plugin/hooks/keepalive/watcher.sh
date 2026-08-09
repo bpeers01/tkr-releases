@@ -24,8 +24,18 @@
 
 set -u
 
+# A native caller (node spawnSync, Claude Code on Windows) invokes this as
+# `bash C:\...\watcher.sh` with no MSYS arg conversion, so $0 arrives
+# backslashed and dirname yields "." — every source below would then resolve
+# against the caller's CWD and set -u would abort the hook.
+SELF="${0//\\//}"
+case "$SELF" in
+  */*) SELF_DIR="${SELF%/*}" ;;
+  *)   SELF_DIR="." ;;
+esac
+
 # shellcheck source=./resolve-python.sh
-. "$(dirname "$0")/resolve-python.sh"
+. "$SELF_DIR/resolve-python.sh"
 PYTHON_BIN="$(tkr_resolve_python)"
 
 # Eligibility check — 1h-TTL accounts only. TKR_KEEPALIVE_SKIP_ELIGIBILITY=1
@@ -44,11 +54,11 @@ except Exception: print("False")
 fi
 
 # shellcheck source=./resolve-sid.sh
-. "$(dirname "$0")/resolve-sid.sh"
+. "$SELF_DIR/resolve-sid.sh"
 SID="$KEEPALIVE_SID"
 
 # shellcheck source=./idle-decision.sh
-. "$(dirname "$0")/idle-decision.sh"
+. "$SELF_DIR/idle-decision.sh"
 
 STATE_DIR="${TKR_STATE_DIR:-$HOME/.tkr}"
 DIR="$STATE_DIR/keepalive/$SID"
@@ -60,7 +70,7 @@ mkdir -p "$DIR" 2>/dev/null || exit 0
 # window. cwd comes from the CC Stop payload (resolve-sid's single stdin
 # read), falling back to $PWD; empty key degrades to per-sid behavior.
 # shellcheck source=./resolve-project.sh
-. "$(dirname "$0")/resolve-project.sh"
+. "$SELF_DIR/resolve-project.sh"
 PROJ_KEY="$(tkr_keepalive_project_key "${KEEPALIVE_PAYLOAD_CWD:-$PWD}")"
 PROJ_DIR=""
 [ -n "$PROJ_KEY" ] && PROJ_DIR="$STATE_DIR/keepalive-projects/$PROJ_KEY"
@@ -172,10 +182,26 @@ transcript_mtime() {
 transcript_activity() {
   [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ] || { echo 0; return 0; }
   local out
-  out="$("$PYTHON_BIN" "$(dirname "$0")/transcript-activity.py" "$TRANSCRIPT" 2>/dev/null || echo "")"
+  out="$("$PYTHON_BIN" "$SELF_DIR/transcript-activity.py" "$TRANSCRIPT" 2>/dev/null || echo "")"
   case "$out" in
     ''|*[!0-9]*) transcript_mtime ;;
     *) echo "$out" ;;
+  esac
+}
+
+# Issue #152 item 1: is an AskUserQuestion/ExitPlanMode outstanding with no
+# answer yet? A pending interactive prompt appends no transcript rows, so
+# it is otherwise indistinguishable from an abandoned session. Detection
+# failure (no transcript, python error, garbage output) reads as "0" —
+# not-pending, i.e. fall back to pre-#152 behavior — rather than "1", so a
+# broken detector cannot permanently wedge the watcher into never firing.
+transcript_pending() {
+  [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ] || { echo 0; return 0; }
+  local out
+  out="$("$PYTHON_BIN" "$SELF_DIR/transcript-activity.py" "$TRANSCRIPT" pending 2>/dev/null || echo "")"
+  case "$out" in
+    1) echo 1 ;;
+    *) echo 0 ;;
   esac
 }
 
@@ -222,6 +248,20 @@ while true; do
   fi
   NOW="$(date +%s)"
   DECISION="$(keepalive_idle_decision "$ACTIVITY_AT" "$NOW" "$IDLE_THRESHOLD_SEC")"
+
+  # Issue #152 item 1: a pending AskUserQuestion/ExitPlanMode overrides a
+  # FIRE decision regardless of computed idle time — the human being
+  # mid-decision looks identical to abandoned from idle time alone, and
+  # the wake would land on top of their answer wrapped in Claude Code's
+  # "NOT USER INPUT" boilerplate (the reported failure). Checked only when
+  # the plain idle decision would otherwise FIRE — no need to pay the
+  # extra python invocation on every WAIT/RESEED tick.
+  if [ "$DECISION" = "FIRE" ]; then
+    PENDING_PROMPT="$(transcript_pending)"
+    if [ "$(keepalive_pending_prompt_gate "$PENDING_PROMPT")" = "WAIT" ]; then
+      DECISION="WAIT"
+    fi
+  fi
 
   # RESEED: no usable activity timestamp (never seeded, or a resume desynced
   # the activity touch from this watcher's session dir). Re-seed to now and

@@ -68,7 +68,14 @@ recommendations — not data wrangling.
 
 This directory holds the **core tier** — the only skills registered by
 a default plugin install: `brevity`, `compress`, `config`, `continue`,
-`handoff`, `search`, `status`, `usage`.
+`handoff`, `rehydrate`, `search`, `status`, `usage`.
+
+A core skill cannot shell to `scripts/`: the core bundle is
+`.claude-plugin + agents + bin/tkr-launcher.js + hooks + skills` and
+excludes `scripts/` and `adapters/` (`release.yml`, PUBLIC-009). Core
+skills call `tkr <verb>` — the binary ships in both tiers — or carry
+their own helper inside the skill dir (`handoff/scripts/`). Only
+advanced skills may reference `${CLAUDE_PLUGIN_ROOT}/scripts/*.py`.
 
 Everything else lives in `skills-advanced/` (same anatomy, NOT
 auto-registered). Opt-in = copy the folder into the deployed plugin's

@@ -185,6 +185,153 @@ test("a slash-command turn is recorded as manual, not auto", () => {
   }
 });
 
+// --- INV-095 gate, end to end ----------------------------------------
+
+const BIG_TOKENS = 200_000;
+
+// Seeds the measurement cache rather than planting a tree under the real
+// bundled-skills root: the hook cannot tell the difference, and the test
+// must not depend on which Claude Code version happens to be installed
+// on the machine running it.
+function runGated(payload, extraEnv, seed) {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-skill-gate-"));
+  const treeDir = path.join(tmp, "tree");
+  fs.mkdirSync(treeDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, "skill-bundles.json"),
+    JSON.stringify({
+      schema: 1,
+      entries: {
+        "claude-api": {
+          dir: treeDir,
+          tokens: BIG_TOKENS,
+          files: 65,
+          index: [
+            ["shared/model-migration.md", 44088],
+            ["shared/pricing.md", 12000],
+          ],
+          ts: Date.now(),
+        },
+      },
+    })
+  );
+  const env = { ...process.env, TKR_STATE_DIR: tmp };
+  for (const k of [
+    "TKR_HOOKS_DISABLED",
+    "TKR_SKILL_AUDIT_DISABLED",
+    "TKR_SKILL_GATE",
+    "TKR_SKILL_GATE_DISABLED",
+    "TKR_SKILL_GATE_THRESHOLD",
+  ]) {
+    delete env[k];
+  }
+  Object.assign(env, extraEnv || {});
+  if (seed) seed(tmp);
+  const res = spawnSync(process.execPath, [HOOK], {
+    input: JSON.stringify(payload),
+    env,
+    encoding: "utf8",
+  });
+  const log = path.join(tmp, LOG_NAME);
+  const rows = fs.existsSync(log)
+    ? fs.readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse)
+    : [];
+  let out = {};
+  try {
+    out = JSON.parse(res.stdout);
+  } catch {
+    out = { __unparsed: res.stdout };
+  }
+  return { res, out, rows, tmp, treeDir };
+}
+
+const gatedCall = {
+  tool_name: "Skill",
+  tool_input: { skill: "claude-api", args: "prompt caching ttl" },
+  session_id: "s-gate",
+  prompt_id: "p-gate",
+};
+
+test("gate default asks the user, and the question survives a no", () => {
+  const { out, rows, tmp, treeDir } = runGated(gatedCall);
+  try {
+    assert.strictEqual(out.hookSpecificOutput.permissionDecision, "ask");
+    // An ask is not a block: the top-level form means deny, so emitting
+    // it here would block on builds that read the old shape.
+    assert.strictEqual(out.decision, undefined);
+    const why = out.hookSpecificOutput.permissionDecisionReason;
+    assert.match(why, /claude-api/);
+    assert.ok(why.includes(treeDir), "reason must name the on-disk tree");
+    assert.match(why, /shared\/model-migration\.md/);
+    // Evidence is written before the decision, so a gated call still
+    // leaves a row — same ordering as the spawn veto.
+    assert.strictEqual(rows.length, 1);
+    assert.strictEqual(rows[0].gate_mode, "ask");
+    assert.strictEqual(rows[0].gate_action, "ask");
+    assert.strictEqual(rows[0].bundle_tokens, BIG_TOKENS);
+    assert.strictEqual(rows[0].bundle_files, 65);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("deny mode still blocks in both response shapes", () => {
+  const { out, rows, tmp } = runGated(gatedCall, { TKR_SKILL_GATE: "deny" });
+  try {
+    assert.strictEqual(out.decision, "block");
+    assert.strictEqual(out.hookSpecificOutput.permissionDecision, "deny");
+    assert.strictEqual(out.reason, out.hookSpecificOutput.permissionDecisionReason);
+    assert.strictEqual(out.updatedInput, undefined);
+    assert.strictEqual(rows[0].gate_action, "deny");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("warn mode notifies the user and never touches model context", () => {
+  const { out, rows, tmp } = runGated(gatedCall, { TKR_SKILL_GATE: "warn" });
+  try {
+    assert.match(out.systemMessage, /claude-api/);
+    assert.strictEqual(out.hookSpecificOutput, undefined);
+    assert.strictEqual(out.decision, undefined);
+    assert.strictEqual(rows[0].gate_action, "warn");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("a manual /claude-api is never asked about — it is the escape hatch", () => {
+  const { out, rows, tmp } = runGated(gatedCall, {}, (dir) => {
+    const prev = process.env.TKR_STATE_DIR;
+    process.env.TKR_STATE_DIR = dir;
+    try {
+      require("./lib/slash-marker.js").recordSlashCommand("/claude-api", "s-gate", "p-gate");
+    } finally {
+      if (prev === undefined) delete process.env.TKR_STATE_DIR;
+      else process.env.TKR_STATE_DIR = prev;
+    }
+  });
+  try {
+    assert.deepStrictEqual(out, {});
+    assert.strictEqual(rows[0].invocation_source, "manual");
+    assert.strictEqual(rows[0].gate_action, "none");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("a bundle under threshold is silent even in deny mode", () => {
+  const { out, tmp } = runGated(gatedCall, {
+    TKR_SKILL_GATE: "deny",
+    TKR_SKILL_GATE_THRESHOLD: String(BIG_TOKENS + 1),
+  });
+  try {
+    assert.deepStrictEqual(out, {});
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("a row with no skill name still says unknown", () => {
   // The one case that genuinely cannot be answered: with no skill name
   // there is nothing to match a marker against, so the question was

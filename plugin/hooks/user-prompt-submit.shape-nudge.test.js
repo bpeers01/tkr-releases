@@ -182,7 +182,13 @@ test("returns empty when active <= recommended", () => {
   } finally { cleanup(fp); }
 });
 
-test("returns empty when escalate_model set (model nudge, not effort)", () => {
+// Behavior CHANGED by #143 finding 3. This used to assert "" — the
+// escalation was deferred to a nudge that was never built, so the one
+// verdict the matrix is most confident about reached no channel at all,
+// while routeInjectContext separately told the underpowered session to
+// raise its effort to a level its tier does not accept. The escalation
+// now lands here, and the effort line stays silent instead.
+test("escalate_model emits a model nudge, not silence", () => {
   const prompt = "test-escalate";
   const fp = writeCache(prompt, {
     shape: "frontier",
@@ -191,7 +197,28 @@ test("returns empty when escalate_model set (model nudge, not effort)", () => {
   });
   try {
     withEffort("max", () => {
-      assert.strictEqual(shapeNudgeContext({ prompt }), "");
+      const got = shapeNudgeContext({ prompt });
+      assert.match(got, /shape=frontier/);
+      assert.match(got, /claude-opus-4-7 recommended/);
+      assert.match(got, /below the threshold/,
+        "the nudge must say the MODEL is the problem, not the effort");
+    });
+  } finally { cleanup(fp); }
+});
+
+// An escalation carries no recommend_effort by construction, so nothing
+// downstream may try to rank it against the active effort.
+test("escalate_model fires even when the active model reports no effort", () => {
+  const prompt = "test-escalate-no-effort";
+  const fp = writeCache(prompt, {
+    shape: "frontier",
+    recommend_effort: "",
+    escalate_model: "claude-sonnet-5",
+  });
+  try {
+    withEffort("", () => {
+      assert.match(shapeNudgeContext({ prompt }), /claude-sonnet-5 recommended/,
+        "Haiku accepts no effort parameter; the escalation must not need one");
     });
   } finally { cleanup(fp); }
 });
@@ -413,4 +440,39 @@ test("routeInjectContext TKR_ROUTE_SYNC=0 restores fire-and-forget miss", () => 
     else process.env.TKR_ROUTE_CACHE_DIR = prevCacheDir;
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+// ── The reported symptom (#143 finding 3) ───────────────────────────────
+//
+// Verbatim from the issue: a Haiku session classified for security-review
+// work produced `{"active_model":"claude-haiku-4-5","recommended_model":
+// "claude-opus-5","effort":"xhigh"}`. That `xhigh` is the figure for the
+// RECOMMENDED model — Haiku accepts no effort parameter at all — yet the
+// route channel injected it as advice to the running session, and the
+// escalation that was the actual answer was suppressed. One verdict now
+// goes out, and it names the model.
+test("an underpowered session is told to switch models, not to raise effort", () => {
+  const prompt = "test-143-finding-3";
+  const fp = writeCache(prompt, {
+    task_class: "ambiguous_debug",
+    effort: "xhigh",
+    active_model: "claude-haiku-4-5",
+    recommended_model: "claude-opus-5",
+    shape: "bounded_judgment",
+    recommend_effort: "",
+    escalate_model: "claude-opus-5",
+  });
+  try {
+    withEffort("low", () => {
+      assert.strictEqual(
+        routeInjectContext({ prompt }),
+        "",
+        "the effort channel must stay silent when the answer is a different model",
+      );
+      const shapeOut = shapeNudgeContext({ prompt });
+      assert.match(shapeOut, /claude-opus-5 recommended/);
+      assert.doesNotMatch(shapeOut, /xhigh/,
+        "an effort level the active tier cannot accept must never be recommended to it");
+    });
+  } finally { cleanup(fp); }
 });

@@ -1157,7 +1157,14 @@ test("PR1: writer bench p95 < 5ms (1000 iter, in-process)", () => {
     const sorted = Array.from(samples).sort((a, b) => (a < b ? -1 : 1));
     const p95 = sorted[Math.floor(N * 0.95)];
     const p95Ms = Number(p95) / 1_000_000;
-    assert.ok(p95Ms < 5, `p95 ${p95Ms.toFixed(3)}ms ≥ 5ms budget`);
+    // CLIX-004: absolute-time gates flake on shared CI runners; CI workflows
+    // set TKR_BENCH_BUDGET_MULT=3 for headroom, local runs stay tight. This
+    // gate predated the convention and was the one straggler still asserting
+    // a bare 5ms — it fails whenever the box is busy, which for `node --test
+    // hooks/**/*.test.js` (how CI invokes it) means whenever a sibling suite
+    // happens to be spawning hooks in a parallel child process.
+    const budgetMs = 5 * Math.max(1, Number(process.env.TKR_BENCH_BUDGET_MULT) || 1);
+    assert.ok(p95Ms < budgetMs, `p95 ${p95Ms.toFixed(3)}ms ≥ ${budgetMs}ms budget`);
   });
 });
 

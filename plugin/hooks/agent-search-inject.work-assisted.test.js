@@ -459,7 +459,7 @@ test("with no plan at all, nothing about routing changes", () => {
     assert.strictEqual(rows.length, 1);
     assert.ok(!("plan_id" in rows[0]));
     assert.ok(!("claim_denied" in rows[0]), "no plan means no claim to deny");
-    assert.strictEqual(rows[0].schema_version, 4);
+    assert.strictEqual(rows[0].schema_version, 6);
   } finally {
     fx.cleanup();
   }
@@ -943,5 +943,126 @@ test("unknown or partial vocabulary: no plan fields, no fill", () => {
     } finally {
       fx.cleanup();
     }
+  }
+});
+
+// ── The veto and the claim (#143 finding 2) ─────────────────────────────────
+//
+// Two defects, one ordering. `workRoute` claimed the plan as its last
+// step, and `vetoCheck` ran afterwards on the ORIGINAL call — so a denied
+// spawn consumed the plan, and the rewritten call (the one that actually
+// runs) was never checked at all. The second half is the sharper one: a
+// generic spawn carries no tkr:* profile, so the original-call check
+// declines to run, and the rewrite then hands the task to a read-only
+// worker with that worker's own contract never consulted.
+//
+// Shimmed via TKR_BIN pointing at a JS file, same mechanism (and same
+// reasoning) as the veto tests in agent-search-inject.test.js — see the
+// header there. Runs on every platform; the old PATH shim did not.
+function withTkrShim(responseObj) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-veto-shim-"));
+  const shim = path.join(dir, "tkr-shim.js");
+  fs.writeFileSync(
+    shim,
+    `process.stdin.resume();\nprocess.stdin.on("data", () => {});\n` +
+      `process.stdout.write(${JSON.stringify(JSON.stringify(responseObj))} + "\\n");\n`,
+  );
+  return {
+    env: { TKR_BIN: shim },
+    cleanup: () => {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+    },
+  };
+}
+
+const DENY = {
+  verdict: "deny",
+  reason: "mutation_to_readonly_worker",
+  detail: "profile tkr:explore-haiku is read-only and this task carries mutation intent",
+  enforce: true,
+  evaluated: true,
+  mode: "assisted",
+};
+
+// The gap itself: the emitted call is tkr:explore-haiku, so the profile's
+// contract has to be asked about it. Before this, the only question asked
+// was about "general-purpose", which vetoCheck declines to answer.
+test("the REWRITTEN call is veto-checked, not just the original", () => {
+  const fx = fixture();
+  const shim = withTkrShim(DENY);
+  try {
+    writeState(fx.dir, "assisted");
+    const res = spawnSync(process.execPath, [HOOK], {
+      input: JSON.stringify(agentEvent({ prompt: "edit internal/foo.go and rename X to Y" })),
+      encoding: "utf8",
+      env: { ...process.env, ...fx.env, ...shim.env },
+    });
+    assert.strictEqual(res.status, 0, `hook exited ${res.status}: ${res.stderr}`);
+    const out = JSON.parse(res.stdout);
+    assert.strictEqual(out.decision, "block",
+      "a generic spawn rewritten into a read-only worker must still face that worker's veto");
+    assert.strictEqual(out.hookSpecificOutput.permissionDecision, "deny");
+    assert.ok(!("updatedInput" in out.hookSpecificOutput),
+      "a denied spawn is never also rewritten");
+  } finally {
+    shim.cleanup();
+    fx.cleanup();
+  }
+});
+
+// The ordering half: a plan the veto refused is not spent, so the
+// coordinator's corrected retry can still use it. Before this the retry
+// found the plan claimed and silently ran unrouted.
+test("a vetoed spawn does not consume the plan claim", () => {
+  const fx = fixture();
+  const denyShim = withTkrShim(DENY);
+  try {
+    writeState(fx.dir, "assisted");
+
+    // Attempt 1: denied. The plan must survive it.
+    const denied = spawnSync(process.execPath, [HOOK], {
+      input: JSON.stringify(agentEvent({ prompt: "edit internal/foo.go and rename X to Y" })),
+      encoding: "utf8",
+      env: { ...process.env, ...fx.env, ...denyShim.env },
+    });
+    assert.strictEqual(JSON.parse(denied.stdout).decision, "block");
+    denyShim.cleanup();
+
+    // Attempt 2: the corrected retry, with no reachable veto (fail-open).
+    // It must still be shaped by the plan the denial did not spend.
+    const retry = run(fx, agentEvent());
+    assert.ok(retry.updated, "the retry produced no updatedInput at all");
+    assert.strictEqual(retry.updated.subagent_type, PROFILE,
+      "the denied spawn consumed the plan; the corrected retry ran unrouted");
+    assert.strictEqual(retry.rows.length, 2);
+    assert.strictEqual(retry.rows[0].veto_denied, true, "row 1 records the denial");
+    assert.strictEqual(retry.rows[0].rewrite_mode, "none",
+      "a denied spawn never reports itself as routed");
+    assert.strictEqual(retry.rows[1].rewrite_mode, "assisted",
+      "row 2 is the retry the plan actually shaped");
+  } finally {
+    fx.cleanup();
+  }
+});
+
+// Fail-open survives the second check too: an unreachable binary must not
+// turn an assisted rewrite into a block.
+test("an unreachable veto binary still lets the rewrite through", () => {
+  const fx = fixture();
+  const empty = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-noexist-"));
+  try {
+    writeState(fx.dir, "assisted");
+    const res = spawnSync(process.execPath, [HOOK], {
+      input: JSON.stringify(agentEvent()),
+      encoding: "utf8",
+      env: { ...process.env, ...fx.env, PATH: empty },
+    });
+    assert.strictEqual(res.status, 0);
+    const out = JSON.parse(res.stdout);
+    assert.ok(!out.decision, "a missing binary must never block");
+    assert.strictEqual(out.hookSpecificOutput.updatedInput.subagent_type, PROFILE);
+  } finally {
+    try { fs.rmSync(empty, { recursive: true, force: true }); } catch {}
+    fx.cleanup();
   }
 });

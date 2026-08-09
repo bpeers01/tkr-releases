@@ -76,11 +76,13 @@ test("veto_checked=false (or absent) writes no veto_* fields at all", () => {
   withLedger((ledger) => {
     emitTaskSpawn({ session_id: "s1", tool_name: "Agent", subagent_type: "Explore" });
     const row = readSpawns(ledger)[0];
-    assert.strictEqual(row.schema_version, 4);
+    assert.strictEqual(row.schema_version, 6);
     assert.ok(!("veto_checked" in row), "no check ran; the row must stay silent on veto");
     assert.ok(!("veto_denied" in row));
     assert.ok(!("veto_reason" in row));
     assert.ok(!("veto_would_deny" in row));
+    assert.ok(!("veto_local_deny" in row), "no timeout happened; no local decision to report");
+    assert.ok(!("veto_local_reason" in row));
   });
 });
 

@@ -108,13 +108,13 @@ function delegateNudge() {
 }
 
 // Build the core guidance block (brevity + plugin awareness).
-function buildCoreGuidance(sid, projectPath) {
+function buildCoreGuidance(sid, projectPath, source) {
   const brevityMode = getBrevityMode();
   writeBrevityFlag(brevityMode);
   const brevitySection = loadBrevitySection(brevityMode);
   const budgetWarning = getBudgetWarning();
   const pinnedWarning = loadPinnedBudgetWarning(sid);
-  const resumeAdvisory = loadContinueAdvisory(sid, projectPath);
+  const resumeAdvisory = loadContinueAdvisory(sid, projectPath, source);
   const planningNudge = loadPlanningNudge();
   const cacheMechanicsNudge = loadCacheMechanicsNudge();
   const readNudge = loadReadNudge();
@@ -258,8 +258,12 @@ function runMain(inputRaw) {
     try { logSessionEffort(sid, input); } catch {}
     // Persist the same detection to effort-<sid>.json so the shape
     // nudge in user-prompt-submit can read active effort when the
-    // effort env vars are absent from its own environment.
-    try { persistSessionEffort(sid, input); } catch {}
+    // effort env vars are absent from its own environment. Session
+    // lifecycle hooks are not given effort, so this normally detects
+    // nothing — but a launch boundary is the one place where "nothing
+    // detected" legitimately clears a snapshot left by a prior launch
+    // of this sid.
+    try { persistSessionEffort(sid, input, process.env, { clearWhenAbsent: true }); } catch {}
   }
   if (source === "startup") {
     // Fire-and-forget: capture CLAUDE.md paths so they survive /compact (PLAN-6).
@@ -278,7 +282,7 @@ function runMain(inputRaw) {
     try { spawnModeAuto(sid, spawnBounded); } catch {}
   }
 
-  process.stdout.write(snapshotPrefix + buildCoreGuidance(sid, projectPath));
+  process.stdout.write(snapshotPrefix + buildCoreGuidance(sid, projectPath, source));
 
   // Auto-refresh search index so `tkr search` returns results immediately.
   // Bounded fire-and-forget: hook-side debounce skips if last fire <60s

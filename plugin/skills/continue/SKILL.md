@@ -20,6 +20,14 @@ under `.tkr/handoffs/` at end of session; `/continue` reads it at the
 start of the next one. When no usable file exists, falls back to a
 JSONL-derived compact summary.
 
+Three tiers on the read side. This skill is tier 1 (handoff file, ~1.6k,
+curated) and tier 3 (JSONL skeleton, ~5k, `--jsonl`). Tier 2 is
+**`/rehydrate`** — the prior session's actual thread replayed from its
+transcript, 12–27k, verbatim conversation with tool output dropped. Use
+it when the handoff's summary is not enough and you need what was
+actually tried: commands, reversals, subagent findings. The two compose —
+handoff for the plan, thread for the detail.
+
 Trigger names: `/continue` is primary; `/handoff-resume` and
 `/load-handoff` are fallbacks in case `/continue` collides with a
 Claude Code built-in. `/resume-coach` kept as 30-day alias for the
@@ -43,6 +51,12 @@ prior skill name.
 ## Decision tree
 
 ```
+<tkr-carryover> block already in this session's context?
+└── yes → STOP. Say which file is already loaded and stop. HAND-005
+          auto-injected it at SessionStart; re-reading spends the
+          tokens the /clear was taken to reclaim. Continue only if
+          the user asks for a different file.
+
 explicit path arg (contains "/" or ends ".md")?
 └── yes → FILE PATH on that file (skip freshness gating, see above)
 
@@ -127,12 +141,20 @@ naturally; the user wrote that file already.
 SessionStart (any source: startup, resume, compact, **clear**) emits
 the advisory when:
 
-- `.continue-here.md` exists and mtime < 24h → "fresh handoff" nudge
-- `.continue-here.md` exists and mtime 24h-3d → "stale handoff" nudge
+- a handoff exists and mtime < 24h → "fresh handoff" nudge
+- a handoff exists and mtime 24h-3d → "stale handoff" nudge
 - No file, but prior session `cum_cw > 200K` with `away_summary` → JSONL nudge
 
 Outside those bands the hook stays silent — user can still invoke
 `/continue` manually any time (the skill is `user-invocable: true`).
+
+**One case emits content, not a nudge (HAND-005).** When source is
+`clear` AND exactly one handoff is <10min old AND it is <24KB, the hook
+inlines the body in a `<tkr-carryover>` block and this skill has already
+done its job before being invoked — see the first branch of the decision
+tree. Any other combination falls back to the nudges above, so the
+advisory is still the common case. Kill switch:
+`TKR_AUTO_CONTINUE_DISABLED=1`.
 
 ## Backing CLI (JSONL path only)
 

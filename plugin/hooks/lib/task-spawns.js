@@ -10,7 +10,7 @@
 // playbook-events.jsonl (L0-L6 playbook layer events): different
 // observability concern, different consumers.
 //
-// Schema (v4):
+// Schema (v5):
 //   {
 //     "at":              "2026-05-20T15:48:45.123Z",
 //     "session_id":      "<uuid>",
@@ -19,7 +19,7 @@
 //     "description":     "<tool_input.description>",
 //     "model":           "" | "opus" | "sonnet" | "haiku",
 //     "background":      false,
-//     "schema_version":  4,
+//     "schema_version":  6,
 //
 //     // Lifecycle join anchors (v3). Both come straight off the
 //     // PreToolUse payload; neither is derived or guessed.
@@ -55,7 +55,27 @@
 //     "veto_checked":     true,
 //     "veto_denied":      false,   // veto.enforce && veto.verdict==="deny"
 //     "veto_reason":      "mutation_to_readonly_worker",  // omitted when ""
-//     "veto_would_deny":  false    // omitted unless true (observe mode)
+//     "veto_would_deny":  false,   // omitted unless true (observe mode)
+//
+//     // v5 (#143 finding 1). Mutually exclusive with veto_checked: a
+//     // check was ATTEMPTED and produced no verdict. Present only in that
+//     // case, so absence of BOTH keys keeps its v4 meaning exactly —
+//     // no check was attempted at all.
+//     "veto_unavailable": "timeout" | "unreachable" | "bad_response",
+//
+//     // v6 (#143 finding 1, second half). The HOOK denied this spawn
+//     // locally after a timeout, without a policy verdict. Independent of
+//     // both keys above rather than exclusive with either: it accompanies
+//     // veto_unavailable:"timeout" when neither check answered, and
+//     // veto_checked when one answered and the other timed out.
+//     //
+//     // Never fold this into veto_denied. That field means route.VetoCheck
+//     // refused the spawn; this one means route.VetoCheck was unreachable
+//     // and the hook acted on a cached work mode plus a keyword scan. The
+//     // two have different standing and a reader that sums them overstates
+//     // what the veto adjudicated, precisely when it adjudicated least.
+//     "veto_local_deny":   true,
+//     "veto_local_reason": "veto_check_timeout"   // omitted when ""
 //   }
 //
 // "emitted", not "actual": these are what this hook put on the tool call,
@@ -80,7 +100,11 @@
 // veto_checked on a v4 row means no veto check ran for this spawn (a
 // non-tkr profile, or the kill switch was on) — a fact, not a gap — while
 // absence on a v3-or-earlier row means this writer had not shipped the
-// concept yet and cannot be read as "not checked". The Go readers decode
+// concept yet and cannot be read as "not checked". v5 splits that v4
+// "fact" in two: it was conflating "nobody asked" with "we asked and the
+// binary never answered", and on Windows — where a spawn can cost 4-6s
+// against a 500ms budget — the second is the common one. A v4 row cannot
+// be back-read as either; it can only say the check did not complete. The Go readers decode
 // only the fields they know and ignore the rest, so no reader needs to
 // change in step.
 //
@@ -92,7 +116,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 6;
 
 function ledgerPath() {
   if (process.env.TKR_TASK_SPAWNS_PATH) return process.env.TKR_TASK_SPAWNS_PATH;
@@ -151,6 +175,15 @@ function emitTaskSpawn(record) {
   // work plan was current for this spawn. All-or-nothing on
   // veto_checked, same reasoning as plan_id: a row either says a check
   // ran and what it found, or it says nothing about veto at all.
+  // v5 (#143 finding 1): a check that was ATTEMPTED and produced no
+  // verdict — timed out, binary unreachable, unusable response. Mutually
+  // exclusive with veto_checked and never a substitute for it: absence of
+  // both still means no check was attempted (non-tkr profile, kill
+  // switch), which is what a v4 reader already assumes, so this is purely
+  // additive. Written before veto_checked so the exclusivity is local.
+  if (record.veto_checked !== true && record.veto_unavailable) {
+    row.veto_unavailable = String(record.veto_unavailable);
+  }
   if (record.veto_checked === true) {
     row.veto_checked = true;
     row.veto_denied = record.veto_denied === true;
@@ -161,6 +194,22 @@ function emitTaskSpawn(record) {
     // (enforcing modes and clean spawns alike) and omitting it keeps
     // those rows byte-identical to a pre-veto v4 row with no violation.
     if (record.veto_would_deny === true) row.veto_would_deny = true;
+  }
+  // v6 (#143 finding 1, second half): the hook denied this spawn itself
+  // because the check timed out at the measured budget and the spawn fell
+  // in the one class whose fail-open cost is unrecoverable — a read-only
+  // profile handed a mutating task. Independent of both keys above: it can
+  // accompany veto_unavailable:"timeout" (neither check answered) or
+  // veto_checked (one answered, the other timed out), and it is never a
+  // substitute for either. Kept out of veto_denied on purpose — that field
+  // means policy refused, this one means policy was unreachable and the
+  // hook acted on cached evidence. Summing them would overstate what the
+  // veto actually adjudicated.
+  if (record.veto_local_deny === true) {
+    row.veto_local_deny = true;
+    if (record.veto_local_reason) {
+      row.veto_local_reason = String(record.veto_local_reason);
+    }
   }
 
   // Work-routing join (§14.2). All-or-nothing on plan_id: a row either

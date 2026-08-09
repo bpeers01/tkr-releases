@@ -558,7 +558,14 @@ test("shape over-effort nudge reads the state recommendation", () => {
   }
 });
 
-test("escalate_model in state still defers (no same-turn model directive)", () => {
+// Behavior CHANGED by #143 finding 3: this asserted "" on every turn,
+// on the reasoning that a model mismatch is not an effort nudge. True,
+// and the conclusion was silence rather than the right nudge — so a
+// session running below the shape's threshold heard nothing here while
+// the route channel told it to raise effort instead. The escalation now
+// fires, under the same sustained-mismatch discipline as the other
+// shape nudges.
+test("escalate_model in state fires a model nudge once sustained", () => {
   const sid = `rs-escalate-${process.pid}`;
   const prompt = `rs-escalate-prompt-${process.pid}`;
   const sfp = writeState(sid, prompt, {
@@ -571,13 +578,15 @@ test("escalate_model in state still defers (no same-turn model directive)", () =
   const efp = writeEffortFile(sid, "max");
   try {
     withEnv({}, () => {
+      let fired = "";
       for (let i = 0; i < ROUTE_STREAK_MIN + 1; i++) {
-        assert.strictEqual(
-          shapeNudgeContext({ prompt, session_id: sid }, null),
-          "",
-          "model escalation is not an effort nudge — PR 0 stays silent",
-        );
+        const got = shapeNudgeContext({ prompt, session_id: sid }, null);
+        if (got) fired = got;
       }
+      assert.match(fired, /claude-sonnet-5 recommended/,
+        "a sustained escalation must reach the model, not be dropped");
+      assert.match(fired, /high-stakes/,
+        "the stakes marker belongs on the escalation too");
     });
   } finally {
     cleanup(sfp, efp, routeNudgeStatePath(sid));
