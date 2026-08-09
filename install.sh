@@ -2,7 +2,7 @@
 # tkr installer — downloads the latest release binary from GitHub.
 # Supports three modes (PUBLIC-009 core/advanced split):
 #   --cli              CLI-only: installs the tkr binary to PATH + shell hook (default)
-#   --plugin           Core plugin: binary + hooks + 8 core skills
+#   --plugin           Core plugin: binary + hooks + 9 core skills
 #                      (compression + search + brevity + status surfaces)
 #   --plugin-advanced  Everything: core plus the 13 advanced skills
 #                      (delegation, OpenRouter toggles, audits), the
@@ -374,8 +374,17 @@ cleanup_legacy_hooks() {
   # Prefer the fork-free native verb when the installed binary supports it
   # (INV-085); fall back to the bash script for a binary that predates it.
   local statusline_cmd="bash ${PLUGIN_DIR}/hooks/statusline.sh"
+  # Values this installer is allowed to overwrite. Never widen this to match a
+  # statusLine the user chose themselves — an unrecognized value is left alone.
+  local legacy_statusline_re="shadowlane"
   if [ -x "$DEST" ] && "$DEST" statusline render --help >/dev/null 2>&1; then
     statusline_cmd="\"${DEST}\" statusline render"
+    # INST-007: an existing install already points at tkr's own forking bash
+    # renderer, which matches neither the null nor the shadowlane clause — so
+    # every pre-v5.18.0 install stayed on the bash script no matter how often
+    # the installer re-ran. Adopt it only when the binary can serve the native
+    # verb, so a downgrade never rewrites a working native statusLine to bash.
+    legacy_statusline_re="shadowlane|hooks[/\\\\]statusline\\.(sh|ps1)"
   fi
   local needs_rewrite=false needs_statusline=false
 
@@ -388,15 +397,15 @@ cleanup_legacy_hooks() {
   needs_statusline_update='
     .statusLine as $s |
     ($s == null) or ($s == "") or
-    ($s | type == "string" and test("shadowlane")) or
-    ($s | type == "object" and ((.command // "") | test("shadowlane")))
+    ($s | type == "string" and test($re)) or
+    ($s | type == "object" and ((.command // "") | test($re)))
   '
 
   jq -e "$has_tkr_rewrite" "$settings_file" >/dev/null 2>&1 && needs_rewrite=true
-  jq -e "$needs_statusline_update" "$settings_file" >/dev/null 2>&1 && needs_statusline=true
+  jq -e --arg re "$legacy_statusline_re" "$needs_statusline_update" "$settings_file" >/dev/null 2>&1 && needs_statusline=true
 
   if [ "$needs_rewrite" = "true" ] || [ "$needs_statusline" = "true" ]; then
-    if jq --arg cmd "$statusline_cmd" '
+    if jq --arg cmd "$statusline_cmd" --arg re "$legacy_statusline_re" '
       (if .hooks.PreToolUse then
         .hooks.PreToolUse |= map(select(
           (((.command // "") | test("tkr-rewrite")) or
@@ -405,8 +414,8 @@ cleanup_legacy_hooks() {
       else . end)
       |
       (if (.statusLine | (. == null or . == "" or
-           (type == "string" and test("shadowlane")) or
-           (type == "object" and ((.command // "") | test("shadowlane"))))) then
+           (type == "string" and test($re)) or
+           (type == "object" and ((.command // "") | test($re))))) then
         .statusLine = $cmd
       else . end)
     ' "$settings_file" > "${settings_file}.tmp" && mv "${settings_file}.tmp" "$settings_file"; then
