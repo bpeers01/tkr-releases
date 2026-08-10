@@ -9,13 +9,43 @@ It works on four fronts at once: compresses bloated tool output before Claude re
 
 Built for Claude Code on **Pro, Max, or Team**. API users get the same wins paid in dollars instead of cap headroom (`tkr gain --economics`). Binaries ship every release for macOS, Linux, and Windows; automated release-validation smoke testing currently covers Linux and Windows only (see Requirements). Single static binary, zero runtime dependencies.
 
-> **What's new in v5.19.0** — tkr stops treating a high percentage as an
+> **What's new in v5.20.0** — The status line's usage meters now show
+> *pace*, not just percentage. Your spend draws in a neutral colour
+> against how far the window has actually elapsed: a green band means
+> you're ahead of the clock, a bright band means you're burning faster
+> than it, and no band means you're exactly on pace. The line is also
+> simpler — six fixed sections plus a single alert — and a new
+> `TKR_STATUSLINE_STYLE` setting picks between full bars, a compact
+> layout for narrow terminals, and background-filled meters.
+> Several fixes make tkr's command wrappers more trustworthy. Searches
+> run through tkr's grep could report "no matches" for files it never
+> actually looked at — too large, unreadable, or past an internal limit;
+> it now hands those searches to your system grep, or says plainly that
+> it couldn't finish instead of quietly claiming an empty result, and
+> notes any files it skipped when it does find matches. `gh pr checks`
+> works again with current GitHub CLI versions (it exited with an error
+> that looked like a broken gh install). `git commit` run through tkr is
+> no longer cut off partway through a slow pre-commit hook — a failure
+> that left the commit lost while the change stayed staged. The
+> keepalive kill switch (`TKR_KEEPALIVE_DISABLE=1`) now genuinely turns
+> keepalive off, and leftover keepalive state from crashed sessions is
+> cleaned up automatically. Handoffs now end with a ready-to-paste
+> resume command for your next session, and the automatic carry-over
+> after clearing a session tells you it happened — previously it worked
+> silently and you couldn't tell it had fired. Claude itself reads
+> slightly updated guidance the first time you launch it after
+> upgrading.
+> [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
+>
+> **v5.19.0** — tkr stops treating a high percentage as an
 > emergency when you still have plenty of runway. Being 85% through your
 > weekly budget means something very different with eleven hours left in
 > the window than with six days left, and tkr now reads the ratio rather
 > than the number — so it stops nagging you to wrap up and hand off while
-> you still have room to work. The statusline shows that ratio next to the
-> percentage. **Claude itself will behave a little differently the first
+> you still have room to work. The statusline draws it: the usage meter
+> shows your spend against how far the window has actually gone, so being
+> ahead or behind is visible without doing the arithmetic.
+> **Claude itself will behave a little differently the first
 > time you launch it after upgrading**, because the guidance it reads was
 > updated to match; set `TKR_PACE_ADJUST_DISABLED=1` if you want the old
 > percentage-only behaviour.
@@ -205,10 +235,10 @@ Claude Code, Gemini CLI, and Cursor rewrite commands automatically — no manual
 
 ```bash
 # macOS / Linux / Git Bash
-TKR_VERSION=v5.19.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
+TKR_VERSION=v5.20.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.19.0
+irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.20.0
 ```
 
 #### Manual download
@@ -446,7 +476,7 @@ tkr keepalive watcher-state        # current session: idle seconds, threshold, f
 tkr keepalive prune-state          # remove orphan ~/.tkr/keepalive/<sid>/ dirs
 ```
 
-The statusline shows watcher state as `keepalive:watching | armed | fired@HH:MM | stale | off`. Tune the threshold via `TKR_KEEPALIVE_IDLE_MIN=N`. Note that `TKR_KEEPALIVE_DISABLE=1` is narrower than its name suggests — it suppresses one activity signal, not the watcher itself; use `TKR_HOOKS_DISABLED=1` to turn the whole hook surface off.
+The statusline shows watcher state as `keepalive:watching | armed | fired@HH:MM | stale | off`. Tune the threshold via `TKR_KEEPALIVE_IDLE_MIN=N`. `TKR_KEEPALIVE_DISABLE=1` disables keepalive — the watcher (checked at start and re-checked every tick) and the interactive-answer activity signal; `TKR_HOOKS_DISABLED=1` turns the whole hook surface off.
 
 ---
 
@@ -565,7 +595,7 @@ When installed as a plugin, tkr registers 9 core on-demand skills invocable with
 ## Verify Installation
 
 ```bash
-tkr --version             # expected: tkr v5.19.0 (or newer)
+tkr --version             # expected: tkr v5.20.0 (or newer)
 tkr doctor                # health check — PASS/WARN/FAIL rows; exit 0 or 2
 tkr verify                # run built-in filter tests (341 should pass)
 ```
