@@ -8,6 +8,7 @@ const os = require("os");
 const path = require("path");
 
 const {
+  loadContinue,
   loadContinueAdvisory,
   AUTO_CONTINUE_MAX_AGE_MS,
   AUTO_CONTINUE_MAX_BYTES,
@@ -168,4 +169,74 @@ test("playbook kill switches suppress the injection too", () => {
       else process.env[key] = prev;
     }
   }
+});
+
+// --- HAND-008: the fire must be visible to the human ------------------
+//
+// HAND-005 shipped context-only, so a fire rendered nothing to the user and
+// they typed the /continue it exists to remove. These pin the user-facing
+// half; the model-facing half is covered above.
+
+test("an auto-continue fire returns a user-facing systemMessage", () => {
+  const root = makeProject([{ name: "a-20260805-1200.md", ageMs: 6 * 60 * 1000 }]);
+  const out = withStateDir(() => loadContinue("sid1", root, "clear"));
+  assert.match(out.context, /<tkr-carryover /, "model still gets the body");
+  assert.ok(out.systemMessage, "user gets a line");
+  assert.match(out.systemMessage, /auto-loaded/);
+  assert.match(out.systemMessage, /a-20260805-1200\.md/, "names the file");
+  assert.match(out.systemMessage, /6m old/, "age lets a wrong-file load be caught");
+  assert.match(out.systemMessage, /no \/continue needed/);
+});
+
+// The user wrote this file minutes ago and it is already in model context.
+// Echoing it to the terminal is noise, and on a 24KB cap, a lot of it.
+test("the systemMessage never repeats the carry-over body", () => {
+  const root = makeProject([{ name: "a-20260805-1200.md", ageMs: 60 * 1000 }]);
+  const out = withStateDir(() => loadContinue("sid1", root, "clear"));
+  assert.doesNotMatch(out.systemMessage, /Run the migration\./);
+  assert.ok(out.systemMessage.length < 200, "stays one glanceable line");
+});
+
+// Pruning is a user action; the model cannot take it, so the hint has to
+// reach the terminal and not only the injected block.
+test("the systemMessage carries the prune hint when old files exist", () => {
+  const root = makeProject([
+    { name: "fresh-20260805-1200.md", ageMs: 60 * 1000 },
+    { name: "old1-20260701-1200.md", ageMs: 30 * 24 * 60 * 60 * 1000 },
+    { name: "old2-20260702-1200.md", ageMs: 31 * 24 * 60 * 60 * 1000 },
+  ]);
+  const out = withStateDir(() => loadContinue("sid1", root, "clear"));
+  assert.match(out.systemMessage, /2 handoffs >7d/);
+  assert.match(out.systemMessage, /\/handoff prune/);
+});
+
+// Every other path renders its own text into context, which the user sees
+// by way of the model. A systemMessage there would double-report it.
+test("non-auto paths return an empty systemMessage", () => {
+  const cases = [
+    ["startup source", [{ name: "a-20260805-1200.md", ageMs: 60 * 1000 }], "startup"],
+    ["stale handoff", [{ name: "a-20260805-1200.md", ageMs: 2 * 24 * 60 * 60 * 1000 }], "clear"],
+    [
+      "two in window",
+      [
+        { name: "a-20260805-1200.md", ageMs: 60 * 1000 },
+        { name: "b-20260805-1205.md", ageMs: 120 * 1000 },
+      ],
+      "clear",
+    ],
+    ["no handoffs", [], "clear"],
+  ];
+  for (const [label, specs, source] of cases) {
+    const root = makeProject(specs);
+    const out = withStateDir(() => loadContinue("sid1", root, source));
+    assert.strictEqual(out.systemMessage, "", label);
+  }
+});
+
+// 13 call sites predate HAND-008 and pass a bare string around.
+test("loadContinueAdvisory still returns the context string", () => {
+  const root = makeProject([{ name: "a-20260805-1200.md", ageMs: 60 * 1000 }]);
+  const str = withStateDir(() => loadContinueAdvisory("sid1", root, "clear"));
+  assert.strictEqual(typeof str, "string");
+  assert.match(str, /<tkr-carryover /);
 });

@@ -130,8 +130,18 @@ function handleInput(input) {
     // Only worth a second subprocess when the rewrite would actually
     // change the profile being asked about; otherwise this is the same
     // question the first check already answered.
+    // The PROFILE checked is the prospective one; the PROMPT checked is
+    // the coordinator's, never the one this hook just assembled. tkr must
+    // not read intent from its own boilerplate: SEARCH_GUIDANCE ends
+    // "...to explore the codebase, run:", and `run` is in mutationVerbs
+    // (internal/route/intent.go), so the injected text alone renders
+    // mutation_to_readonly_worker. Passing `prospective` here denied EVERY
+    // assisted Explore spawn — the hook shaped the call and then vetoed
+    // itself for the shaping. Checking the coordinator's prompt against the
+    // emitted profile keeps #143 finding 2 intact (the rewritten profile is
+    // still consulted) and drops only the signal tkr wrote.
     const asEmitted = workEligible && work.plannedProfile !== subagentType
-      ? vetoCheck(prospective.subagent_type, prospective)
+      ? vetoCheck(prospective.subagent_type, { ...prospective, prompt: toolInput.prompt || "" })
       : { verdict: null, unavailable: "" };
     // What POLICY said, on the checks that answered. Kept separate from the
     // local fallback below all the way to the ledger: `veto_checked: true`

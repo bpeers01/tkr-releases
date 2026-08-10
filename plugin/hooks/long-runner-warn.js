@@ -47,6 +47,92 @@ const L4_PATTERNS = [
 const safeReadJSON = readJSONSync;
 const safeWriteJSON = writeJSONAtomic;
 
+// splitSegments breaks a compound command into the individual commands a
+// shell would run, so an `unbounded`-class pattern cannot bridge across a
+// boundary via its `.*` (INV-104: `| tail -2` early plus an unrelated
+// `rm -f` late read as `tail -f`). Splits on `&&`, `||`, `|`, `;` and
+// newline; quote- and escape-aware so a separator inside "..." or '...'
+// stays part of its segment. A lone `&` is NOT a separator — it would
+// split `2>&1`, and a trailing background `&` needs no split.
+function splitSegments(command) {
+  if (!command || typeof command !== "string") return [];
+  const segments = [];
+  let cur = "";
+  let quote = null;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    if (quote) {
+      cur += c;
+      // Backslash escapes only inside double quotes, per sh.
+      if (c === "\\" && quote === '"' && i + 1 < command.length) cur += command[++i];
+      else if (c === quote) quote = null;
+      continue;
+    }
+    if (c === "\\" && i + 1 < command.length) {
+      cur += c + command[++i];
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      quote = c;
+      cur += c;
+      continue;
+    }
+    if (c === ";" || c === "\n" || c === "|" || (c === "&" && command[i + 1] === "&")) {
+      // Consume the whole operator run so `&&` / `||` yield one boundary.
+      while (i + 1 < command.length && "|&;".includes(command[i + 1])) i++;
+      segments.push(cur);
+      cur = "";
+      continue;
+    }
+    cur += c;
+  }
+  segments.push(cur);
+  return segments.map((s) => s.trim()).filter(Boolean);
+}
+
+// stripQuoted blanks the INTERIOR of quoted spans, leaving the quote
+// characters. Matching runs on the result: a real watcher's own flags are
+// never inside quotes (`tail -f "my log.txt"` keeps its -f), while a shell
+// snippet passed as an argument — `node -e '... tail -2 ... rm -f ...'` —
+// stops looking like one. Segmentation alone does not cover this: the whole
+// quoted argument is a single segment. Observed live on INV-104's own fix.
+function stripQuoted(segment) {
+  let out = "";
+  let quote = null;
+  for (let i = 0; i < segment.length; i++) {
+    const c = segment[i];
+    if (quote) {
+      if (c === "\\" && quote === '"' && i + 1 < segment.length) {
+        i++;
+        continue;
+      }
+      if (c === quote) {
+        quote = null;
+        out += c;
+      }
+      continue;
+    }
+    if (c === "\\" && i + 1 < segment.length) {
+      out += c + segment[++i];
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      quote = c;
+      out += c;
+      continue;
+    }
+    out += c;
+  }
+  return out;
+}
+
+// signatureOf pulls the short quoted form used in the hint and telemetry.
+// Callers pass the MATCHED SEGMENT, never the whole compound line — the
+// head of the line is frequently a `cd`, which is not what fired.
+function signatureOf(text) {
+  return String(text || "").trim().split(/\s+/).slice(0, 3).join(" ");
+}
+
 function l4StatePath(sid) {
   return path.join(TKR_STATE_DIR, `l4-state-${sid || "default"}.json`);
 }
@@ -59,18 +145,23 @@ function writeL4State(sid, state) {
   safeWriteJSON(l4StatePath(sid), state);
 }
 
-// matchPattern returns the matched pattern descriptor or null.
+// matchPattern returns the matched pattern descriptor, augmented with the
+// `segment` that actually matched, or null. Pattern order is the outer
+// loop so declared precedence in L4_PATTERNS is preserved across segments.
 function matchPattern(command) {
   if (!command || typeof command !== "string") return null;
+  const segments = splitSegments(command);
   for (const p of L4_PATTERNS) {
-    if (p.re.test(command)) return p;
+    for (const seg of segments) {
+      if (p.re.test(stripQuoted(seg))) return { ...p, segment: seg };
+    }
   }
   return null;
 }
 
 function formatHint(pattern, command) {
-  // Pull a short signature for the hint — first 2 words of the command.
-  const sig = command.trim().split(/\s+/).slice(0, 3).join(" ");
+  // Quote the segment that matched, not the head of the compound line.
+  const sig = signatureOf((pattern && pattern.segment) || command);
   if (pattern.durClass === "minutes") {
     return (
       `[L4 long-runner: \`${sig}\` typically exceeds 5min Anthropic cache TTL → ` +
@@ -121,7 +212,7 @@ function emitTelemetry(sid, pattern, command) {
       "L4",
       "fired",
       {
-        command_signature: command.trim().split(/\s+/).slice(0, 3).join(" "),
+        command_signature: signatureOf((pattern && pattern.segment) || command),
         matched_pattern: pattern.name,
         est_duration_class: pattern.durClass,
       },
@@ -180,6 +271,8 @@ if (require.main === module) {
 module.exports = {
   L4_PATTERNS,
   L4_FIRE_CAP,
+  splitSegments,
+  stripQuoted,
   matchPattern,
   formatHint,
   shouldFire,

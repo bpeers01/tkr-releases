@@ -44,6 +44,24 @@ InstructionsLoaded).
 - **Stderr** — debug only; never relied on for control flow.
 - **Exit code** — non-zero treated as failure; hook silently skipped.
   Don't use exit codes for decisions.
+- **PostToolUse receives the ORIGINAL tool input, not a PreToolUse
+  `updatedInput`.** Claude Code executes the rewritten command but hands
+  PostToolUse the command the model wrote. A PostToolUse hook therefore
+  **cannot** tell from its payload whether `tkr-rewrite.js` already
+  routed that call through tkr. Measured 2026-08-10: 0 of 459
+  compression-telemetry rows carry a `tkr` prefix, and 40 of 18,499 Bash
+  calls across 744 transcripts do — those 40 being calls the model typed
+  as `tkr ...` itself. This is why `post-tool-call.js:321`
+  (`/^\s*tkr\s/`, written to skip output tkr had already filtered) is
+  dead code with respect to its purpose. Any cross-phase signal must
+  travel through a side channel keyed on `tool_use_id`, which both hooks
+  carry — never through command text. Do **not** try to rescue the text
+  approach by matching a `tkr` token at any segment head to catch
+  `cd X && tkr git status`: that scores 26.4%→80.3% against
+  `hook_rewrites.rewritten_to` and buys nothing, because that table
+  stores the *executed* form and this hook never sees it. Full
+  measurement: `TODO.md` INV-112 § Measured; harness at
+  `scripts/inv112_spawn_population.js`.
 
 ## Stability rules
 
@@ -268,6 +286,22 @@ Convention: `~/.tkr/<feature>.{json,jsonl}` (honor `TKR_STATE_DIR` env):
   `tkr route classify` and silently drop a verdict. SessionStart sweeps
   both at 24h alongside mode and statusline files.
 - `compact-bypass-<sid>` — pre-compact nudge bypass flag
+- `run/<key>.{json,sock,start,cooldown}` — resident-runtime state (#209),
+  in a `0700` directory. `<key>` is sha256(project root)[:16], computed
+  identically by `lib/resident-client.js` and `internal/resident.Key`; if
+  those two ever disagree the feature silently never engages, so the
+  parity is tested rather than assumed. `.json` is the `0600` endpoint
+  file (address, token, and the binary's size+mtime — the upgrade guard);
+  `.sock` the Unix socket (Windows uses a loopback TCP port instead, and
+  is UNVALIDATED); `.start` an mtime-only marker rate-limiting lazy
+  starts to one per 5s so a crash-looping runtime cannot become an extra
+  spawn per Bash call; `.cooldown` an epoch-ms deadline written after a
+  request timeout so a hung runtime costs one deadline, not one per call.
+  Every failure to use the runtime falls back to spawning `tkr` exactly
+  as before. Off unless `TKR_RESIDENT_ENABLED=1`; `TKR_RESIDENT_DISABLED=1`
+  wins over it. When reading the endpoint from Node, stat with
+  `{bigint: true}` — the float `mtimeMs` carries sub-ms precision that
+  Go's `UnixMilli()` truncates, and a plain `===` rejects every endpoint.
 - `rewrite-heads.json` — rewrite-eligibility heads manifest (HOOK-003).
   Written by the Go binary (refresh-on-rewrite, `tkr init`, doctor);
   read by `tkr-rewrite.js` to skip the subprocess for commands no rule

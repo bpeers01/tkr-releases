@@ -155,6 +155,52 @@ test("watcher.sh suppresses a respawned watcher with no activity since last fire
   }
 });
 
+// --- INV-098: TKR_KEEPALIVE_DISABLE stops the watcher itself ---
+//
+// The documented keepalive kill switch used to reach only the PostToolUse
+// interactive-answer touch; the watcher ignored it. It must now exit
+// before any state I/O — no ledger row, no lock, no fire — even from a
+// state that would otherwise suppress or fire.
+
+test("watcher.sh honors TKR_KEEPALIVE_DISABLE=1 (exit 0, no state writes, no ledger)", { skip: !BASH }, () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-keepalive-disable-"));
+  try {
+    const sid = "disable-test-sid";
+    const dir = path.join(stateDir, "keepalive", sid);
+    fs.mkdirSync(dir, { recursive: true });
+    const now = Math.floor(Date.now() / 1000);
+    // Same suppress-shaped state as the gate test: without the kill switch
+    // this run would emit a keepalive_suppressed ledger row.
+    fs.writeFileSync(path.join(dir, "fired-at"), String(now - 300));
+    fs.writeFileSync(path.join(dir, "activity"), String(now - 900));
+
+    const r = spawnSync(BASH, [WATCHER.replace(/\\/g, "/")], {
+      encoding: "utf8",
+      timeout: 30000,
+      input: "",
+      env: {
+        ...process.env,
+        TKR_KEEPALIVE_DISABLE: "1",
+        TKR_KEEPALIVE_SKIP_ELIGIBILITY: "1",
+        TKR_SESSION_ID: sid,
+        TKR_STATE_DIR: stateDir,
+      },
+    });
+
+    assert.equal(r.status, 0, `watcher.sh exited ${r.status}, stderr: ${r.stderr}`);
+    assert.ok(
+      !fs.existsSync(path.join(stateDir, "playbook-events.jsonl")),
+      "disabled watcher must emit no ledger rows",
+    );
+    assert.ok(
+      !fs.existsSync(path.join(dir, "watcher.pid")),
+      "disabled watcher must not take the pid lock",
+    );
+  } finally {
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
 // --- keepalive_effective_activity: transcript activity counts as activity ---
 //
 // Regression (2026-08-02): `activity` is written only by the activity touch on

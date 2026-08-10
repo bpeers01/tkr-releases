@@ -975,6 +975,36 @@ function withTkrShim(responseObj) {
   };
 }
 
+// Same shim, but it records every payload the hook sent it. What the hook
+// ASKS is the assertion target here — a shim that only answers cannot
+// distinguish "checked the coordinator's prompt" from "checked its own
+// injected boilerplate", and that distinction is the whole of INV-099.
+function withRecordingTkrShim(responseObj) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-veto-rec-"));
+  const shim = path.join(dir, "tkr-shim.js");
+  const log = path.join(dir, "payloads.jsonl");
+  fs.writeFileSync(
+    shim,
+    `const fs = require("fs");\nlet buf = "";\n` +
+      `process.stdin.on("data", (c) => { buf += c; });\n` +
+      `process.stdin.on("end", () => {\n` +
+      `  try { fs.appendFileSync(${JSON.stringify(log)}, buf.trim() + "\\n"); } catch {}\n` +
+      `  process.stdout.write(${JSON.stringify(JSON.stringify(responseObj))} + "\\n");\n` +
+      `});\n`,
+  );
+  return {
+    env: { TKR_BIN: shim },
+    payloads: () =>
+      (fs.existsSync(log)
+        ? fs.readFileSync(log, "utf8").split("\n").filter(Boolean)
+        : []
+      ).map((l) => JSON.parse(l)),
+    cleanup: () => {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+    },
+  };
+}
+
 const DENY = {
   verdict: "deny",
   reason: "mutation_to_readonly_worker",
@@ -1004,6 +1034,51 @@ test("the REWRITTEN call is veto-checked, not just the original", () => {
     assert.strictEqual(out.hookSpecificOutput.permissionDecision, "deny");
     assert.ok(!("updatedInput" in out.hookSpecificOutput),
       "a denied spawn is never also rewritten");
+  } finally {
+    shim.cleanup();
+    fx.cleanup();
+  }
+});
+
+// INV-099. The hook injects SEARCH_GUIDANCE into every Explore spawn, and
+// that text ends "...to explore the codebase, run:". `run` is a
+// mutationVerb, so checking the ASSEMBLED prompt made tkr deny a spawn on
+// the strength of its own boilerplate — every assisted Explore spawn, on
+// any machine where the check could actually run. It stayed invisible for
+// three nightlies because a dev box with a reachable-but-non-enforcing
+// tkr, or no tkr at all, answers allow either way.
+//
+// The profile asked about must still be the EMITTED one (#143 finding 2);
+// only the prompt reverts to what the coordinator wrote.
+test("the veto sees the coordinator's prompt, never the hook's own injection", () => {
+  const fx = fixture();
+  const shim = withRecordingTkrShim({
+    verdict: "allow", enforce: false, evaluated: true, mode: "assisted",
+  });
+  try {
+    writeState(fx.dir, "assisted");
+    const res = spawnSync(process.execPath, [HOOK], {
+      input: JSON.stringify(agentEvent({ subagent_type: "Explore" })),
+      encoding: "utf8",
+      env: { ...process.env, ...fx.env, ...shim.env },
+    });
+    assert.strictEqual(res.status, 0, `hook exited ${res.status}: ${res.stderr}`);
+
+    const asked = shim.payloads();
+    assert.strictEqual(asked.length, 1, "exactly the emitted-call check runs");
+    assert.strictEqual(asked[0].subagent_type, PROFILE,
+      "the EMITTED profile is what the veto is asked about");
+    assert.strictEqual(asked[0].prompt, "find where the retry budget is configured",
+      "the coordinator's prompt, verbatim — no guidance, no contract scaffold");
+    assert.ok(!asked[0].prompt.includes("tkr search"),
+      "injected search guidance must never reach the risk gate");
+    assert.ok(!asked[0].prompt.includes("TKR bounded worker contract"),
+      "the worker contract scaffold must never reach the risk gate");
+
+    // And the spawn still gets shaped — the point of not self-vetoing.
+    const out = JSON.parse(res.stdout);
+    assert.ok(!out.decision, "an allowed read-only spawn is not blocked");
+    assert.strictEqual(out.hookSpecificOutput.updatedInput.subagent_type, PROFILE);
   } finally {
     shim.cleanup();
     fx.cleanup();

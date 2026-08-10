@@ -45,12 +45,13 @@ const {
   getBudgetWarning,
   loadPinnedBudgetWarning,
 } = require("./lib/sessionstart/budget-warning");
-const { loadContinueAdvisory } = require("./lib/sessionstart/continue");
+const { loadContinue } = require("./lib/sessionstart/continue");
 const { logSessionEffort, persistSessionEffort } = require("./lib/sessionstart/effort-log");
 const { loadSnapshotXML } = require("./lib/sessionstart/snapshot");
 const {
   spawnCleanupOld,
   spawnCaptureRules,
+  spawnKeepalivePrune,
 } = require("./lib/sessionstart/sideeffects");
 const {
   sweepStaleStatuslineFiles,
@@ -108,13 +109,24 @@ function delegateNudge() {
 }
 
 // Build the core guidance block (brevity + plugin awareness).
-function buildCoreGuidance(sid, projectPath, source) {
+//
+// `out` is an optional collector for output that must NOT be concatenated
+// into the returned string — currently just `out.systemMessage` (HAND-008),
+// which is user-facing and would be noise in model context. It is a
+// parameter rather than a second return value because the string return is
+// what every caller and test already consumes, and because the one producer
+// (loadContinue) has a telemetry side effect that must fire exactly once.
+function buildCoreGuidance(sid, projectPath, source, out) {
   const brevityMode = getBrevityMode();
   writeBrevityFlag(brevityMode);
   const brevitySection = loadBrevitySection(brevityMode);
   const budgetWarning = getBudgetWarning();
   const pinnedWarning = loadPinnedBudgetWarning(sid);
-  const resumeAdvisory = loadContinueAdvisory(sid, projectPath, source);
+  const continueResult = loadContinue(sid, projectPath, source);
+  const resumeAdvisory = continueResult.context;
+  if (out && continueResult.systemMessage) {
+    out.systemMessage = continueResult.systemMessage;
+  }
   const planningNudge = loadPlanningNudge();
   const cacheMechanicsNudge = loadCacheMechanicsNudge();
   const readNudge = loadReadNudge();
@@ -237,6 +249,11 @@ function runMain(inputRaw) {
   if (source === "startup" || source === "resume" || source === "compact") {
     // Fire-and-forget: prune >7-day session rows from SQLite.
     spawnCleanupOld(projectPath);
+    // INV-085 adjacent finding: ~/.tkr/keepalive/<sid>/ dirs from crashed
+    // sessions never reaped (cleanup.sh runs only on clean SessionEnd), so
+    // watcher-state inspection and KEEP-006 fire accounting saw ghosts.
+    // The Go verb validates against the CC session registry before removing.
+    spawnKeepalivePrune();
     // Best-effort: prune leftover per-session statusline payloads from
     // crashed sessions where Stop never ran. Sync local-fs scan, bounded
     // by tmpdir entry count — runs in <5ms typical.
@@ -282,7 +299,30 @@ function runMain(inputRaw) {
     try { spawnModeAuto(sid, spawnBounded); } catch {}
   }
 
-  process.stdout.write(snapshotPrefix + buildCoreGuidance(sid, projectPath, source));
+  // HAND-008: two output formats, deliberately. Plain stdout is what this
+  // hook has always emitted and what every session depends on; the docs
+  // call it "added as context" and call `additionalContext` "injected into
+  // Claude's conversation", but never state the two are equivalent. That
+  // equivalence is near-certain and uncited, so only the path that NEEDS
+  // JSON — the one carrying a user-facing `systemMessage` — takes it. It
+  // fires on a handful of sessions, which keeps the blast radius of a wrong
+  // guess to those, and makes them the experiment that would justify
+  // migrating the rest.
+  const out = {};
+  const guidance = snapshotPrefix + buildCoreGuidance(sid, projectPath, source, out);
+  if (out.systemMessage) {
+    process.stdout.write(
+      JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "SessionStart",
+          additionalContext: guidance,
+        },
+        systemMessage: out.systemMessage,
+      }),
+    );
+  } else {
+    process.stdout.write(guidance);
+  }
 
   // Auto-refresh search index so `tkr search` returns results immediately.
   // Bounded fire-and-forget: hook-side debounce skips if last fire <60s

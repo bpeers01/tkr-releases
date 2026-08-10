@@ -17,11 +17,18 @@ const path = require("node:path");
 
 const HOOK = path.resolve(__dirname, "agent-search-inject.js");
 
-function runHook(event, env) {
+// cwd is a real parameter, not a convenience: on Windows CreateProcess
+// searches the CURRENT DIRECTORY before PATH, so a bare `tkr` spawned from
+// a directory holding tkr.exe resolves there no matter what PATH says. CI
+// builds tkr.exe into the repo root and runs these tests from it, which is
+// how the unreachable-binary test below spent three nightlies asserting
+// fail-open against a binary that was, in fact, reachable.
+function runHook(event, env, cwd) {
   return spawnSync(process.execPath, [HOOK], {
     input: JSON.stringify(event),
     encoding: "utf8",
     env: { ...process.env, ...(env || {}) },
+    ...(cwd ? { cwd } : {}),
   });
 }
 
@@ -535,6 +542,9 @@ function withTkrShim(responseObj, { delayMs = 0 } = {}) {
 function pathWithoutTkr() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-noexist-"));
   return {
+    // Callers MUST also run the hook with cwd: dir — see runHook. Clearing
+    // the env alone does not make the binary unreachable on Windows.
+    dir,
     env: {
       PATH: dir,
       TKR_BIN: path.join(dir, "definitely-not-here"),
@@ -637,11 +647,18 @@ test("veto: fail-open when the tkr binary is unreachable — spawn proceeds, no 
   const noTkr = pathWithoutTkr();
   const tmp = withTempLedger();
   try {
-    // Both halves of pathWithoutTkr, not just PATH: on Windows tkr-bin.js
-    // resolves the platform install path before it ever falls back to a
-    // bare name, so an emptied PATH alone leaves a real installed binary
-    // reachable and the check answers instead of failing to run.
-    const res = runHook(tkrEvent(MUTATING_PROMPT), { ...tmp.env, ...noTkr.env });
+    // Three things, not one. Both halves of pathWithoutTkr, because on
+    // Windows tkr-bin.js resolves the platform install path before it ever
+    // falls back to a bare name — so an emptied PATH alone leaves a real
+    // installed binary reachable. And an empty cwd, because CreateProcess
+    // searches the current directory ahead of PATH: with CI's tkr.exe in
+    // the repo root, this test ran a live veto check and read its deny as
+    // a fail-open violation (INV-099).
+    const res = runHook(
+      tkrEvent(MUTATING_PROMPT),
+      { ...tmp.env, ...noTkr.env },
+      noTkr.dir,
+    );
     assert.strictEqual(res.status, 0, `hook itself must still exit 0: ${res.stderr}`);
     const out = JSON.parse(res.stdout || "{}");
     assert.ok(!out.decision, "a missing/unreachable binary must never block the spawn");

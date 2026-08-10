@@ -75,4 +75,89 @@ function tkrSpawnArgv(args, env = process.env) {
   return { cmd: bin, argv: [...args], bin };
 }
 
-module.exports = { resolveTkrBin, tkrSpawnArgv };
+// ── Physical identity ───────────────────────────────────────────────────────
+//
+// resolveTkrBin answers "what do I type to spawn tkr", which is a COMMAND
+// STRING and deliberately allows the bare "tkr" PATH fallback. That is the
+// wrong question for identity: the resident runtime (#209) records
+// os.Executable() — a physical path — and a client has to decide whether the
+// runtime it found is running the same binary it would otherwise have
+// spawned.
+//
+// Naively resolving the command string breaks exactly the PATH-only install:
+// path.resolve("tkr") is cwd-relative, so it produces "<cwd>/tkr", never
+// matches, and the client rejects a perfectly good runtime forever — while
+// still firing a lazy start every 5s, which is worse than not having the
+// feature at all.
+//
+// resolveTkrExe answers the identity question instead, and returns null when
+// it cannot be answered. Null is not "no tkr"; it is "identity unverifiable",
+// and the only safe response to that is to skip the resident path entirely
+// (do not connect, do not start).
+
+function realpathOrNull(p) {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return null;
+  }
+}
+
+// whichFromPath is the PATH search the OS would do for a bare command name.
+// Honors PATHEXT on Windows, where "tkr" on PATH means tkr.exe (or .cmd/.bat,
+// which resolveTkrExe rejects further down — see below).
+function whichFromPath(name, env) {
+  const raw = env.PATH || env.Path || "";
+  if (!raw) return null;
+  const exts =
+    process.platform === "win32"
+      ? (env.PATHEXT || ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)
+      : [""];
+  for (const dir of raw.split(path.delimiter)) {
+    if (!dir) continue;
+    for (const ext of exts) {
+      const candidate = path.join(dir, name + ext);
+      try {
+        if (fs.statSync(candidate).isFile()) return candidate;
+      } catch {
+        // not here — keep looking
+      }
+    }
+  }
+  return null;
+}
+
+// samePhysicalPath compares two resolved paths. Windows paths are
+// case-insensitive, and realpath does not always agree with a recorded path on
+// casing, so the comparison is case-folded there and exact everywhere else.
+function samePhysicalPath(a, b) {
+  if (!a || !b) return false;
+  if (process.platform === "win32") return a.toLowerCase() === b.toLowerCase();
+  return a === b;
+}
+
+// resolveTkrExe returns the absolute, symlink-resolved path of the tkr
+// executable this hook would spawn, or null when that cannot be established.
+//
+// Null cases, both deliberate:
+//
+//   - No tkr found at an explicit TKR_BIN, a standard install location, or on
+//     PATH. Nothing to be identical to.
+//   - The resolved binary is a JS launcher (.js/.cjs/.mjs). tkrSpawnArgv runs
+//     those as `node <launcher>`, so the thing that ends up being the resident
+//     runtime is whatever Go binary the launcher eventually execs — a
+//     DIFFERENT file from the one named here. The launcher's path and
+//     os.Executable() can never match, and pretending otherwise would either
+//     reject every runtime forever or, worse, require trusting a path we did
+//     not verify. `.claude-plugin/plugin.json` really does point Claude Code
+//     at bin/tkr-launcher.js, so this is a shape that ships. Skipping the
+//     resident path there costs an optimization and keeps the guarantee.
+function resolveTkrExe(env = process.env) {
+  const bin = resolveTkrBin(env);
+  if (/\.(c|m)?js$/i.test(bin)) return null;
+  const located = bin === "tkr" ? whichFromPath("tkr", env) : bin;
+  if (!located) return null;
+  return realpathOrNull(located);
+}
+
+module.exports = { resolveTkrBin, tkrSpawnArgv, resolveTkrExe, samePhysicalPath };

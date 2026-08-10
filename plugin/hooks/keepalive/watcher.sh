@@ -24,6 +24,11 @@
 
 set -u
 
+# INV-098: TKR_KEEPALIVE_DISABLE is the documented keepalive kill switch.
+# Honor it before any resolver sourcing or state I/O (and again per tick
+# below — the watcher lives up to 3600s).
+[ "${TKR_KEEPALIVE_DISABLE:-}" = "1" ] && exit 0
+
 # A native caller (node spawnSync, Claude Code on Windows) invokes this as
 # `bash C:\...\watcher.sh` with no MSYS arg conversion, so $0 arrives
 # backslashed and dirname yields "." — every source below would then resolve
@@ -216,6 +221,9 @@ transcript_pending() {
 PARENT_PID="${PPID:-0}"
 
 while true; do
+  # INV-098: per-tick kill-switch re-check, mirroring `tkr keepalive watch`.
+  [ "${TKR_KEEPALIVE_DISABLE:-}" = "1" ] && exit 0
+
   if [ "$PARENT_PID" -gt 1 ] 2>/dev/null && ! kill -0 "$PARENT_PID" 2>/dev/null; then
     exit 0
   fi

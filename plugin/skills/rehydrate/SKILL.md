@@ -47,17 +47,23 @@ only carry what the session actually said.
    title Claude Code stored in the transcript.
 
    Read the `exclusion` field before showing anything. The live session is
-   held back — by `TKR_SESSION_ID` when the environment has it, otherwise
-   by the newest statusline telemetry file. If `exclude_source` is empty,
-   the CLI is telling you it could not identify the live session: say so
-   in the picker, because rehydrating the running session injects context
-   this session already has.
+   held back — by the newest statusline telemetry file, falling back to
+   `TKR_SESSION_ID`. If `exclude_source` is empty, the CLI is telling you
+   it could not identify the live session: say so in the picker, because
+   rehydrating the running session injects context this session already
+   has.
 
 2. **Pick.** With an explicit prefix argument, skip to step 3. Otherwise
    ask with `AskUserQuestion`: one option per row, plus the automatic
    *Other* for typing a prefix. Label each option with the title (fall
    back to the short sid); put `sid · age · N turns · branch` in the
    description. Rank by recency only.
+
+   **When two rows share a title, the label must say how they differ** —
+   append the turn count, e.g. `gate-threshold-analysis (44 turns)`. A
+   custom title carries forward across `/clear`, so a parent and its
+   successor legitimately share one, and two identical labels leave the
+   user picking blind.
 
    **Do not filter by worktree or cwd.** Rehydration is not in-place —
    the session worth rehydrating routinely ran in the main checkout while

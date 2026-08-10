@@ -111,7 +111,7 @@ if (require.main === module) {
     process.exit(0);
   } else {
     readStdinWithTimeout(3000)
-      .then((input) => {
+      .then(async (input) => {
         try {
           const event = JSON.parse(input || "{}");
           // PLAN-36: pass CC's event.cwd so the binary's project-slug
@@ -136,19 +136,19 @@ if (require.main === module) {
           // receives the event; a matched entry would spawn a second node
           // process for it and would have to edit the prefix-cache-critical
           // plugin.json to do so. Cost on every other tool call is one
-          // Set.has() on tool_name. TKR_KEEPALIVE_DISABLE is the name both
-          // READMEs already document as the keepalive kill switch; note
-          // this is currently its ONLY reader — neither watcher.sh nor
-          // `tkr keepalive watch` consults it, so setting it today
-          // suppresses this touch and nothing else. TKR_HOOKS_DISABLED
-          // (module top) remains the switch that stops everything.
+          // Set.has() on tool_name. TKR_KEEPALIVE_DISABLE is the keepalive
+          // kill switch: since INV-098 it also stops the watcher itself
+          // (`tkr keepalive watch` re-checks it per tick; watcher.sh
+          // mirrors both checks), so this touch and the watcher honor the
+          // same name. TKR_HOOKS_DISABLED (module top) remains the switch
+          // that stops everything.
           if (process.env.TKR_KEEPALIVE_DISABLE !== "1") {
             interactiveAnswerTouch({ rawInput: input, data: event, sid: sessionID });
           }
           // Fire-and-forget: classify + persist the event for session-continuity
           // snapshots (PLAN-3). Detached spawn keeps the hook exit path fast.
           spawnSessionRecord(input);
-          const result = processEvent(event);
+          const result = await processEvent(event);
           if (result) {
             process.stdout.write(JSON.stringify(result));
           }
@@ -162,7 +162,11 @@ if (require.main === module) {
 
 const extractSessionID = getSessionID;
 
-function processEvent(event) {
+// processEvent is async as of #209: the filter-stdin leaf can now be served by
+// the resident runtime over a socket. Everything else in here is unchanged and
+// still synchronous — only tryFilterStdin is awaited. The sole caller awaits
+// the result; the function is not exported.
+async function processEvent(event) {
   const sessionID = extractSessionID(event);
 
   // Per-session telemetry scope: ensures getTelemetryPath() inside
@@ -332,8 +336,13 @@ function processEvent(event) {
     return brevityResponse(composedCtx);
   }
 
-  // Path 2: try TOML filter via tkr filter-stdin
-  const filtered = tryFilterStdin(command, stdout);
+  // Path 2: try TOML filter via the resident runtime, else `tkr filter-stdin`
+  // (#209). event.cwd anchors the resident key to the workspace root, same
+  // reason PLAN-36 threads it to the statusline writer: the hook subprocess's
+  // own cwd is not reliably the project.
+  const filtered = await tryFilterStdin(command, stdout, {
+    cwd: typeof event.cwd === "string" ? event.cwd : undefined,
+  });
   if (filtered !== null && filtered !== stdout) {
     recordTelemetry("compression", stdout.length, filtered.length, command);
     return makeResponse(event, outputInfo, filtered, composedCtx);

@@ -45,10 +45,15 @@ the 9.1% ceiling on /clear-recoverable spend.
 
 ## Next Action
 - <The single most-leverage action the next session should take first>
+
+## Next-Session Posture        <!-- optional; omit when shape is unclear -->
+- <Recommended model + effort for the Next Action, with the reason>
 ```
 
-All five sections are mandatory. Writer must reject input with any
+The first five sections are mandatory. Writer must reject input with any
 section empty (except `Open Threads`, which can be `- none`).
+`Next-Session Posture` is optional (`next_session_posture` in the writer
+JSON) and is omitted from the rendered file when absent.
 
 The body must NOT contain live session state — ctx size, turn
 count, `[tkr:]` injection text, cache age, pressure verbs. Those
@@ -105,10 +110,38 @@ Override via `TKR_HANDOFF_TARGET` / `--target <path>`.
    `--no-emit` or `TKR_HANDOFF_NO_EMIT=1` for tests / unattended fires
    from the watcher's keepalive_fired path that want their own event
    class.
-5. **Recommend `/clear`** — close with: "Handoff written to
-   `<target-path>`. Recommend `/clear` next to reset the prefix cache
-   cheaply; the carry-over auto-loads on the other side, no
-   `/continue` needed."
+5. **Close** — the post-write summary MUST contain, in this order:
+
+   a. "Handoff written to `<target-path>`. Recommend `/clear` next to
+      reset the prefix cache cheaply; the carry-over auto-loads on the
+      other side, no `/continue` needed."
+
+   b. **The resume line, on its own line** — copy-paste fodder for
+      after the `/clear`:
+
+      ```
+      /tkr:continue .tkr/handoffs/wave23-plans-corrected-20260809-2022.md
+      ```
+
+      **Relay it, don't compose it.** The writer prints
+      `resume: /tkr:continue <path>` on stdout; reproduce that path
+      character-for-character. It is the only party that knows the final
+      filename, including any `-2`/`-3` collision suffix it picked, and
+      a guessed name sends the next session to a file that doesn't
+      exist. If the writer printed no `resume:` line (custom `--target`
+      outside `.tkr/handoffs/`), omit the line rather than inventing
+      one — `/tkr:continue` cannot resolve those paths anyway.
+
+      Required every time the writer emits it, even when auto-inject is
+      expected to fire: HAND-005 covers only `/clear`-sourced sessions
+      with one handoff <10min old and <24KB, and this is the fallback
+      for every other case. When the body *was* auto-injected,
+      `/tkr:continue` sees the `<tkr-carryover>` block and stops without
+      re-reading, so pasting the line costs nothing.
+
+   c. **The posture line** — recommended model + effort for the Next
+      Action, one sentence with the reason (see below). Skip it, and
+      say nothing, when the shape isn't clear enough to justify one.
 
    HAND-005: SessionStart injects the body directly when the session
    started from `/clear` and this is the only handoff written in the
@@ -117,6 +150,36 @@ Override via `TKR_HANDOFF_TARGET` / `--target <path>`.
    advisory names the file and asks for `/continue` as before, so the
    claim degrades to a nudge rather than a lie. Do not promise more:
    `/clear` itself cannot be automated from any hook.
+
+## Next-session posture (HAND-006)
+
+`/handoff` → `/clear` → resume is the one moment where changing model or
+effort is free: nothing worth keeping is cached yet. Mid-session those
+changes bust the prefix (CACHE-001), and by the time `/continue` reads
+the file the next session has already started on whatever was set — so
+the *summary* line is the mechanism and the file section is a fallback
+for handoffs picked up days later.
+
+Derive the recommendation from the **shape of the Next Action**, not
+from how this session felt:
+
+- Classifier, routing, architecture, or measurement-design work →
+  suggest Opus/Fable, above-default effort.
+- Filter/TOML batches, mechanical sweeps, doc edits → Sonnet at default
+  effort; say so explicitly, since the useful recommendation is often
+  "don't escalate."
+- Split the two axes with the AGENTS.md heuristic: escalate the **model**
+  when the work needs knowledge the session lacked; escalate **effort**
+  when it needs more tries, deeper search, or verification that got
+  skipped.
+
+State the reason in the same sentence ("Next Action is classifier
+morphology → Opus + high effort; word-boundary semantics need judgment,
+not throughput"). This is a policy heuristic with no outcome data behind
+it — the same `calibration=assumed` standing as `tkr route advise`
+(ADR-0032 §4). Never emit a bare "use Opus, high effort" with no reason,
+and never default to escalation when the shape is ambiguous: omit the
+line instead.
 
 ## Behavior
 
@@ -136,7 +199,8 @@ below). The `.tkr/` directory is gitignored, so files never appear in
 
 `skills/handoff/scripts/write-continue-here.sh` performs the atomic
 write + ledger emit. It accepts JSON on stdin describing the five
-sections and supports `--dry-run`. It never clobbers an existing file
+sections plus the optional `next_session_posture` string, and supports
+`--dry-run`. It never clobbers an existing file
 at the resolved target: on collision it appends a numeric `-2`, `-3`,
 ... suffix before writing, so no prior handoff (automatic or manual)
 is ever silently destroyed.

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// tkr-hook-version: 4
+// tkr-hook-version: 5
 // tkr Claude Code hook — rewrites Bash commands to use tkr for token savings.
 //
 // This Node dispatcher is the primary Claude hook path. It avoids shell-specific
@@ -15,6 +15,7 @@ const path = require("path");
 const { stateDir } = require("./lib/state-dir");
 const { recordRewriteMiss } = require("./lib/rewrite-miss");
 const { tkrSpawnArgv } = require("./lib/tkr-bin");
+const resident = require("./lib/resident-client");
 
 const TKR_STATE_DIR = stateDir();
 const TIMINGS_FILE = path.join(TKR_STATE_DIR, "hook-timings.jsonl");
@@ -107,6 +108,11 @@ function recordRewriteTimeout(sid) {
 const HOOK_START = Date.now();
 let EXIT_STATUS = 0;
 let TIMING_NOTE = "ok";
+// #209: which path produced the rewrite decision — "none" (no work needed),
+// "resident" (served by the local runtime) or "spawn" (fresh tkr process).
+// Recorded alongside elapsed_ms so a timings capture can be split by path
+// without a second instrument.
+let TIMING_SOURCE = "none";
 let finished = false;
 
 // Binary resolution (and the JS-entry-point rule) lives in lib/tkr-bin.js
@@ -146,6 +152,7 @@ function logTiming() {
       elapsed_ms: Date.now() - HOOK_START,
       exit: EXIT_STATUS,
       note: TIMING_NOTE,
+      source: TIMING_SOURCE,
     };
     fs.appendFileSync(TIMINGS_FILE, JSON.stringify(entry) + "\n");
   } catch {
@@ -266,6 +273,18 @@ process.stdin.on("error", () => {
   finish();
 });
 process.stdin.on("end", () => {
+  // #209 made the decision path async (the resident runtime is a socket
+  // round-trip). A rejection here would otherwise become an unhandled
+  // rejection and a non-zero hook exit, which Claude reports as a hook error;
+  // the catch turns any such failure into a plain passthrough.
+  onStdinEnd().catch(() => {
+    TIMING_NOTE = "hook-error";
+    finish();
+  });
+});
+process.stdin.resume();
+
+async function onStdinEnd() {
   clearTimeout(stdinTimer);
   // Note: TKR_HOOKS_DISABLED is checked at module top — control never
   // reaches here when the kill switch is active.
@@ -323,35 +342,55 @@ process.stdin.on("end", () => {
 
   let rewritten = "";
   let exitCode = 1;
+
+  // #209: ask the resident runtime first. It returns null for EVERY failure
+  // mode — disabled, absent, stale endpoint, upgraded binary, unreachable,
+  // slow, malformed frame — and null means "spawn tkr exactly as before".
+  // Nothing here can block the hook: the client owns its own deadline and
+  // suppresses a hung runtime after one timeout.
+  let served = null;
   try {
-    rewritten = execFileSync(REWRITE_SPAWN.cmd, REWRITE_SPAWN.argv.concat([cmd]), {
-      encoding: "utf8",
-      timeout: REWRITE_TIMEOUT_MS,
-      killSignal: "SIGKILL",
-      maxBuffer: 10 * 1024 * 1024,
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-    });
-    exitCode = 0;
-  } catch (err) {
-    if (err && err.code === "ENOENT") {
-      TIMING_NOTE = "no-tkr";
-      finish();
-      return;
-    }
-    if (typeof err?.status === "number") {
-      exitCode = err.status;
-      rewritten = typeof err.stdout === "string" ? err.stdout : String(err.stdout || "");
-    } else if (err?.code === "ETIMEDOUT" || err?.signal === "SIGTERM" || err?.signal === "SIGKILL") {
-      // H-15: record timeout, may trip the circuit breaker.
-      recordRewriteTimeout(sid);
-      TIMING_NOTE = "rewrite-timeout";
-      finish();
-      return;
-    } else {
-      TIMING_NOTE = "rewrite-error";
-      finish();
-      return;
+    served = await resident.call("rewrite", cmd, null, { cwd: event?.cwd });
+  } catch {
+    served = null;
+  }
+
+  if (served) {
+    TIMING_SOURCE = "resident";
+    exitCode = served.exit;
+    rewritten = served.body.toString("utf8");
+  } else {
+    TIMING_SOURCE = "spawn";
+    try {
+      rewritten = execFileSync(REWRITE_SPAWN.cmd, REWRITE_SPAWN.argv.concat([cmd]), {
+        encoding: "utf8",
+        timeout: REWRITE_TIMEOUT_MS,
+        killSignal: "SIGKILL",
+        maxBuffer: 10 * 1024 * 1024,
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+      });
+      exitCode = 0;
+    } catch (err) {
+      if (err && err.code === "ENOENT") {
+        TIMING_NOTE = "no-tkr";
+        finish();
+        return;
+      }
+      if (typeof err?.status === "number") {
+        exitCode = err.status;
+        rewritten = typeof err.stdout === "string" ? err.stdout : String(err.stdout || "");
+      } else if (err?.code === "ETIMEDOUT" || err?.signal === "SIGTERM" || err?.signal === "SIGKILL") {
+        // H-15: record timeout, may trip the circuit breaker.
+        recordRewriteTimeout(sid);
+        TIMING_NOTE = "rewrite-timeout";
+        finish();
+        return;
+      } else {
+        TIMING_NOTE = "rewrite-error";
+        finish();
+        return;
+      }
     }
   }
 
@@ -442,5 +481,4 @@ process.stdin.on("end", () => {
     },
   });
   finish();
-});
-process.stdin.resume();
+}

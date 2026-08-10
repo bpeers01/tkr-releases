@@ -11,7 +11,8 @@
 #
 # stdin shape:
 #   {"truths": [...], "artifacts": [...], "key_links": [...],
-#    "open_threads": [...], "next_action": "..."}
+#    "open_threads": [...], "next_action": "...",
+#    "next_session_posture": "..."}   # optional (HAND-006)
 #
 # Optional env:
 #   TKR_STATE_DIR        — override ~/.tkr (also where ledger lives)
@@ -304,6 +305,16 @@ parts = [
     f"- {next_act}",
     "",
 ]
+
+# Optional, forward-looking only (HAND-006): recommended model/effort for
+# the Next Action. Omitted entirely when absent, so pre-HAND-006 callers
+# render byte-identically. Not live state — it describes the work ahead,
+# which is why it survives the "no session state in the body" rule.
+posture = d.get("next_session_posture")
+if isinstance(posture, list):
+    posture = posture[0] if posture else ""
+if isinstance(posture, str) and posture.strip():
+    parts += ["## Next-Session Posture", "", f"- {posture.strip()}", ""]
 sys.stdout.write("\n".join(parts))
 PYRENDER
 
@@ -386,8 +397,24 @@ TMP="$(mktemp "${TARGET}.XXXXXX")"
 printf '%s\n' "$PREVIEW" > "$TMP"
 mv -f "$TMP" "$TARGET"
 
-if [ "$NO_EMIT" = "1" ]; then
+# HAND-006: print the resume line the model must relay after `/clear`.
+# Mechanical on purpose — the writer is the only party that knows the
+# final path, including any `-N` collision suffix picked above. A
+# model-composed line guesses the filename and sends the next session to
+# a file that doesn't exist; same defect class as HAND-001/HAND-003.
+# Printed only for targets under `.tkr/handoffs/`, because that is what
+# `/tkr:continue <path>` can resolve — it joins a bare path under that
+# dir, so an absolute --target (tests, custom callers) would be mangled.
+# Silence there is honest: no line beats a broken one.
+print_result() {
   echo "wrote $TARGET"
+  case "$TARGET" in
+    .tkr/handoffs/*) echo "resume: /tkr:continue $TARGET" ;;
+  esac
+}
+
+if [ "$NO_EMIT" = "1" ]; then
+  print_result
   exit 0
 fi
 
@@ -396,4 +423,4 @@ mkdir -p "$STATE_DIR"
 NOW="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 "$PYTHON_BIN" "$WORKDIR/emit.py" "$LEDGER" "$SESSION_ID" "$NOW" "$SESSION_ID_SOURCE" "$SOURCE" "$SOURCE_METHOD"
 
-echo "wrote $TARGET"
+print_result

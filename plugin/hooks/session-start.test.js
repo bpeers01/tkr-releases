@@ -996,3 +996,73 @@ test("delegateNudge mentions /tkr:delegate only on advanced tier", () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+// --- HAND-008: output format forks only on the auto-continue path -----
+//
+// Plain stdout is what every session depends on and the docs never state it
+// is equivalent to additionalContext. These pin the fork: JSON exactly when
+// there is a systemMessage to carry, bare text otherwise.
+
+function runHookForContinue(specs, source) {
+  const state = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-ss-h007-state-"));
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-ss-h007-proj-"));
+  const dir = path.join(proj, ".tkr", "handoffs");
+  fs.mkdirSync(dir, { recursive: true });
+  const now = Date.now();
+  for (const s of specs) {
+    const full = path.join(dir, s.name);
+    fs.writeFileSync(full, "# Handoff\n\n## Next Action\nRun the migration.\n");
+    const t = new Date(now - s.ageMs);
+    fs.utimesSync(full, t, t);
+  }
+  try {
+    const env = { ...process.env, TKR_STATE_DIR: state, CLAUDE_PROJECT_DIR: proj };
+    delete env.TKR_SYSPROMPT;
+    const res = spawnSync(process.execPath, [HOOK], {
+      input: JSON.stringify({ source, session_id: "h007-sid" }),
+      encoding: "utf8",
+      env,
+      cwd: proj,
+    });
+    return res.stdout || "";
+  } finally {
+    safeRmSync(state);
+    safeRmSync(proj);
+  }
+}
+
+test("HAND-008: auto-continue emits JSON with a user-only systemMessage", () => {
+  const out = runHookForContinue(
+    [{ name: "a-20260805-1200.md", ageMs: 4 * 60 * 1000 }],
+    "clear",
+  );
+  let parsed;
+  assert.doesNotThrow(() => {
+    parsed = JSON.parse(out);
+  }, "auto path must emit parseable JSON");
+  assert.strictEqual(parsed.hookSpecificOutput.hookEventName, "SessionStart");
+  assert.match(parsed.hookSpecificOutput.additionalContext, /<tkr-carryover /);
+  assert.match(parsed.systemMessage, /carry-over auto-loaded/);
+  // The two channels must not be the same string: one is a 6KB payload, the
+  // other a glanceable line. Collapsing them would print the body.
+  assert.ok(
+    parsed.systemMessage.length < parsed.hookSpecificOutput.additionalContext.length,
+  );
+  assert.doesNotMatch(parsed.systemMessage, /Run the migration\./);
+});
+
+test("HAND-008: every other path keeps bare-text stdout", () => {
+  const cases = [
+    ["startup with fresh handoff", [{ name: "a-20260805-1200.md", ageMs: 60 * 1000 }], "startup"],
+    ["clear with stale handoff", [{ name: "a-20260805-1200.md", ageMs: 2 * 24 * 3600 * 1000 }], "clear"],
+    ["clear with no handoffs", [], "clear"],
+  ];
+  for (const [label, specs, source] of cases) {
+    const out = runHookForContinue(specs, source);
+    assert.ok(out.length > 0, `${label}: hook emitted nothing`);
+    assert.throws(
+      () => JSON.parse(out),
+      `${label}: must stay bare text, not JSON`,
+    );
+  }
+});

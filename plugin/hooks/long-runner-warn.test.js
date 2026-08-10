@@ -104,6 +104,91 @@ test("matchPattern returns null on null/empty input", () => {
   assert.strictEqual(lib.matchPattern(undefined), null);
 });
 
+// ---- INV-104: segment splitting ----
+
+test("splitSegments splits on &&, ||, |, ; and newline", () => {
+  assert.deepStrictEqual(lib.splitSegments("a && b || c | d ; e\nf"), [
+    "a", "b", "c", "d", "e", "f",
+  ]);
+});
+
+test("splitSegments keeps separators inside quotes intact", () => {
+  assert.deepStrictEqual(lib.splitSegments(`grep "a|b" x && echo 'c;d'`), [
+    `grep "a|b" x`,
+    `echo 'c;d'`,
+  ]);
+});
+
+test("splitSegments does not split a lone & (2>&1, background)", () => {
+  assert.deepStrictEqual(lib.splitSegments("go test ./... 2>&1"), ["go test ./... 2>&1"]);
+  assert.deepStrictEqual(lib.splitSegments("sleep 5 &"), ["sleep 5 &"]);
+});
+
+test("splitSegments returns [] for empty/non-string input", () => {
+  for (const v of ["", null, undefined, 42]) {
+    assert.deepStrictEqual(lib.splitSegments(v), []);
+  }
+});
+
+test("INV-104: a bounded `tail -2` plus a later `rm -f` is not tail -f", () => {
+  // The live command from the filing: `.*` bridged these two segments.
+  const cmd = `cd "C:/Users/x/proj" && git worktree list | tail -2 && git worktree prune && rm -f /tmp/msg.txt`;
+  assert.strictEqual(lib.matchPattern(cmd), null, "must not match across segments");
+});
+
+test("INV-104: a real long-runner inside a compound command still matches", () => {
+  const m = lib.matchPattern(`cd /srv/app && tail -f /var/log/app.log`);
+  assert.ok(m, "expected match");
+  assert.strictEqual(m.name, "tail_follow");
+  assert.strictEqual(m.segment, "tail -f /var/log/app.log");
+});
+
+test("INV-104: the hint quotes the matched segment, not the head of the line", () => {
+  const cmd = `cd "C:/Users/x/proj" && npm run dev`;
+  const m = lib.matchPattern(cmd);
+  const hint = lib.formatHint(m, cmd);
+  assert.ok(hint.includes("npm run dev"), `hint should name the watcher: ${hint}`);
+  assert.ok(!hint.includes("cd "), `hint must not name the cd: ${hint}`);
+});
+
+test("INV-104: telemetry command_signature is the matched segment", () => {
+  const { res, ledger } = runHook({
+    tool_name: "Bash",
+    tool_input: { command: `cd /srv && tail -f /var/log/app.log` },
+    session_id: "sid-inv104",
+  });
+  assert.strictEqual(res.status, 0, `exit ${res.status}: ${res.stderr}`);
+  assert.strictEqual(ledger.length, 1);
+  assert.strictEqual(ledger[0].trigger_state.matched_pattern, "tail_follow");
+  assert.strictEqual(ledger[0].trigger_state.command_signature, "tail -f /var/log/app.log");
+});
+
+test("stripQuoted blanks quoted interiors but keeps unquoted flags", () => {
+  assert.strictEqual(lib.stripQuoted(`node -e 'tail -2 rm -f'`), `node -e ''`);
+  assert.strictEqual(lib.stripQuoted(`tail -f "my log.txt"`), `tail -f ""`);
+});
+
+test("INV-104: a shell snippet inside a quoted argument is not a watcher", () => {
+  // Reproduced live while fixing INV-104: this exact call tripped the
+  // installed hook. Both `tail` and `-f` live inside one quoted argument,
+  // so segmentation alone does not separate them.
+  const cmd = `node -e 'const c = "git worktree list | tail -2 && rm -f /tmp/m.txt";'`;
+  assert.strictEqual(lib.matchPattern(cmd), null);
+});
+
+test("INV-104: a watcher with a quoted path argument still matches", () => {
+  const m = lib.matchPattern(`tail -f "/var/log/my app.log"`);
+  assert.ok(m, "quoting the path must not suppress a real match");
+  assert.strictEqual(m.name, "tail_follow");
+});
+
+test("pattern precedence survives segmentation — earlier L4_PATTERNS entry wins", () => {
+  // tail_follow is declared before docker_logs_follow; a command carrying
+  // both must report the earlier one regardless of segment order.
+  const m = lib.matchPattern("docker logs -f svc && tail -f a.log");
+  assert.strictEqual(m.name, "tail_follow");
+});
+
 // ---- Hint formatting ----
 
 test("formatHint includes command signature", () => {

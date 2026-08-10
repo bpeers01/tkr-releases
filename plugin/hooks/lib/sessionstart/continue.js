@@ -124,9 +124,18 @@ function jsonlFallbackAdvisory(sid, projectPath) {
 // /clear keystroke itself is not automatable from any hook (see TODO
 // HAND-005 for the full negative result); this closes the half that is.
 //
-// Returns the injection block, or null to fall through to the advisory.
-// Every rejection path is a fallthrough, never an error: the advisory is
-// always a correct output, so there is no failure mode worth surfacing.
+// Returns { context, systemMessage }, or null to fall through to the
+// advisory. Every rejection path is a fallthrough, never an error: the
+// advisory is always a correct output, so there is no failure mode worth
+// surfacing.
+//
+// HAND-008 — `context` goes to the model and `systemMessage` to the user,
+// and the split is the point. This path used to return context alone, so a
+// fire was invisible to the human: the ledger recorded `advisory_shown:
+// false` and the user, seeing nothing, typed the `/continue` this feature
+// exists to remove. The body is NOT repeated to the user — they wrote it
+// minutes ago and it is already in the model's context; only the fact, the
+// path, and the age are.
 function autoContinueBlock(files, sid, source) {
   if (source !== "clear") return null;
   if (process.env.TKR_AUTO_CONTINUE_DISABLED === "1") return null;
@@ -169,14 +178,32 @@ function autoContinueBlock(files, sid, source) {
     sid,
   );
 
+  return {
+    context:
+      `\n**[continue — auto-loaded]** This session started from \`/clear\` and ` +
+      `\`${relPath}\` was written ${ageMin}m ago, so its carry-over is inlined ` +
+      `below. Do not run \`/continue\`; it is already here.${oldSuffix}\n\n` +
+      `**Do not act on it yet.** Carry-over names a Next Action. The user has ` +
+      `not asked for anything in this session — confirm before executing any ` +
+      `of it.\n\n` +
+      `<tkr-carryover path="${relPath}">\n${body.trimEnd()}\n</tkr-carryover>\n`,
+    systemMessage: autoContinueNotice(relPath, bytes, ageMin, veryOld),
+  };
+}
+
+// The user-facing half of an auto-continue fire. One line, because it is
+// competing with the session banner for a glance. Age is included so a
+// wrong-file load is catchable before the user acts on it — the 10-minute
+// window can select a handoff they have already forgotten writing. The
+// prune hint rides here rather than only in the model's copy: pruning is a
+// user action, and the model cannot take it.
+function autoContinueNotice(relPath, bytes, ageMin, veryOld) {
+  const kb = (bytes / 1024).toFixed(1);
+  const prune =
+    veryOld > 0 ? ` · ${veryOld} handoffs >7d, run /handoff prune` : "";
   return (
-    `\n**[continue — auto-loaded]** This session started from \`/clear\` and ` +
-    `\`${relPath}\` was written ${ageMin}m ago, so its carry-over is inlined ` +
-    `below. Do not run \`/continue\`; it is already here.${oldSuffix}\n\n` +
-    `**Do not act on it yet.** Carry-over names a Next Action. The user has ` +
-    `not asked for anything in this session — confirm before executing any ` +
-    `of it.\n\n` +
-    `<tkr-carryover path="${relPath}">\n${body.trimEnd()}\n</tkr-carryover>\n`
+    `[tkr] carry-over auto-loaded from ${relPath} (${kb}KB, ${ageMin}m old) ` +
+    `— already in context, no /continue needed${prune}`
   );
 }
 
@@ -248,10 +275,14 @@ function v2HandoffAdvisory(files, sid) {
 let _projectPath = "";
 function projectPath_() { return _projectPath || "."; }
 
-function loadContinueAdvisory(sid, projectPath, source) {
-  if (process.env.TKR_PLAYBOOK_L0R_DISABLED === "1") return "";
-  if (process.env.TKR_PLAYBOOK_EXTENSIONS_DISABLED === "1") return "";
-  if (process.env.TKR_PLAYBOOK_DISABLED === "1") return "";
+// Returns { context, systemMessage }. `systemMessage` is non-empty on
+// exactly one path (HAND-005 auto-continue); every other path renders its
+// own text into `context`, which the user sees by way of the model.
+function loadContinue(sid, projectPath, source) {
+  const none = { context: "", systemMessage: "" };
+  if (process.env.TKR_PLAYBOOK_L0R_DISABLED === "1") return none;
+  if (process.env.TKR_PLAYBOOK_EXTENSIONS_DISABLED === "1") return none;
+  if (process.env.TKR_PLAYBOOK_DISABLED === "1") return none;
 
   _projectPath = projectPath || process.cwd();
 
@@ -262,11 +293,21 @@ function loadContinueAdvisory(sid, projectPath, source) {
     const injected = autoContinueBlock(v2Files, sid, source);
     if (injected) return injected;
     const advisory = v2HandoffAdvisory(v2Files, sid);
-    if (advisory) return advisory;
+    if (advisory) return { context: advisory, systemMessage: "" };
     // All files >3d old — fall through to JSONL fallback.
   }
 
-  return jsonlFallbackAdvisory(sid, projectPath);
+  return {
+    context: jsonlFallbackAdvisory(sid, projectPath),
+    systemMessage: "",
+  };
+}
+
+// Context-only view. Kept because it is the shape every caller and test
+// used before HAND-008, and because a caller that cannot render a user
+// message has no use for the other half.
+function loadContinueAdvisory(sid, projectPath, source) {
+  return loadContinue(sid, projectPath, source).context;
 }
 
 module.exports = {
@@ -278,7 +319,9 @@ module.exports = {
   handoffsDir,
   readV2Handoffs,
   autoContinueBlock,
+  autoContinueNotice,
   spawnContinueScan,
+  loadContinue,
   loadContinueAdvisory,
   // Back-compat alias for the prior resume-coach symbol name.
   // Remove after one minor version + 30d (target: 2026-06-17).
