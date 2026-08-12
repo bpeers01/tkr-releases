@@ -9,7 +9,54 @@ It works on four fronts at once: compresses bloated tool output before Claude re
 
 Built for Claude Code on **Pro, Max, or Team**. API users get the same wins paid in dollars instead of cap headroom (`tkr gain --economics`). Binaries ship every release for macOS, Linux, and Windows; automated release-validation smoke testing currently covers Linux and Windows only (see Requirements). Single static binary, zero runtime dependencies.
 
-> **What's new in v5.20.0** — The status line's usage meters now show
+> **What's new in v5.21.0** — This is the release where tkr stops
+> overstating its own numbers. A tool that exists to measure savings has
+> one failure worse than crashing: claiming a saving it didn't deliver.
+> Six of those are fixed here, and most of them move tkr's reported
+> figures **down**.
+> **Expect your totals to drop after upgrading — that's the correction,
+> not a regression.** `tkr gain` had been mixing two eras of stored data
+> and treating the older, unbounded half as if it had been bounded like
+> the newer one. Corrected, all-time saved tokens restate down about 75%
+> on the author's own database, and the filtered-savings rate falls from
+> 89% to 72% — which, unlike 89%, matches what tkr's independent
+> benchmark corpus has always measured (~73%). The top-commands table
+> stops being dominated by a handful of one-off outliers and starts
+> showing the work you actually repeat.
+> In the other direction, the dollar figure in `tkr gain --economics` was
+> too *low*: tokens stripped before they reach Claude would have been
+> billed as cache writes, not at the plain input rate, and carry was
+> priced at a daily average rather than at each turn's actual model. And
+> the idle-keepalive feature had been pricing every wake whose context it
+> never observed as if it had avoided a full rebuild — inventing more
+> than half its reported savings. Wakes it can't measure are now counted
+> rather than priced, and when it can't measure any of them it says
+> `not computable` instead of printing `$0.00`, which reads like "saved
+> nothing" when it means "nothing was measurable".
+> Underneath all of it, tkr's token estimator was under-counting by
+> 30–51% and is now calibrated against real billed token counts. **Two
+> consequences worth knowing**: token totals recorded before this release
+> aren't directly comparable with ones recorded after (percentages and
+> savings *rates* are unaffected — only absolute token counts shift, by
+> about 1.67×), and the same is true of any keepalive dollar figure you
+> saw previously.
+> **One behavior change**: `tkr fread` (and the `tkr_read` tool Claude
+> calls) now default to a structural map of a file rather than its full
+> contents. Full mode was the one mode that made files *bigger*, because
+> of the line-number prefix it adds. Ask for `mode=full` explicitly if
+> you want it; a new guard also falls back to raw content any time a
+> render would come out larger than what it started with.
+> Also new: `TKR_KEEPALIVE_CTX_FLOOR` skips an idle wake for a session
+> too small to be worth waking, and keepalive keeps its own history so a
+> log rotation no longer wipes it. Fixes: installs where `tkr` isn't on
+> your PATH no longer fail silently; `gh pr checks` stops counting
+> skipped checks as passed; the status line's cache-bust counter no
+> longer picks up a sibling session's number; and the context audit's
+> secret scan now actually reads your settings file instead of reporting
+> a clean result it never checked.
+> [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
+>
+> **v5.20.0** — The status line's usage meters now show
 > *pace*, not just percentage. Your spend draws in a neutral colour
 > against how far the window has actually elapsed: a green band means
 > you're ahead of the clock, a bright band means you're burning faster
@@ -235,10 +282,10 @@ Claude Code, Gemini CLI, and Cursor rewrite commands automatically — no manual
 
 ```bash
 # macOS / Linux / Git Bash
-TKR_VERSION=v5.20.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
+TKR_VERSION=v5.21.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.20.0
+irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.21.0
 ```
 
 #### Manual download
@@ -476,7 +523,7 @@ tkr keepalive watcher-state        # current session: idle seconds, threshold, f
 tkr keepalive prune-state          # remove orphan ~/.tkr/keepalive/<sid>/ dirs
 ```
 
-The statusline shows watcher state as `keepalive:watching | armed | fired@HH:MM | stale | off`. Tune the threshold via `TKR_KEEPALIVE_IDLE_MIN=N`. `TKR_KEEPALIVE_DISABLE=1` disables keepalive — the watcher (checked at start and re-checked every tick) and the interactive-answer activity signal; `TKR_HOOKS_DISABLED=1` turns the whole hook surface off.
+The statusline shows watcher state as `keepalive:watching | armed | fired@HH:MM | stale | off`. Tune the threshold via `TKR_KEEPALIVE_IDLE_MIN=N`. `TKR_KEEPALIVE_CTX_FLOOR=N` (default 50000 tokens, `0` disables) skips a wake for a session too small to repay the wake's own cost. `TKR_KEEPALIVE_DISABLE=1` disables keepalive — the watcher (checked at start and re-checked every tick) and the interactive-answer activity signal; `TKR_HOOKS_DISABLED=1` turns the whole hook surface off.
 
 ---
 
@@ -595,7 +642,7 @@ When installed as a plugin, tkr registers 9 core on-demand skills invocable with
 ## Verify Installation
 
 ```bash
-tkr --version             # expected: tkr v5.20.0 (or newer)
+tkr --version             # expected: tkr v5.21.0 (or newer)
 tkr doctor                # health check — PASS/WARN/FAIL rows; exit 0 or 2
 tkr verify                # run built-in filter tests (341 should pass)
 ```
