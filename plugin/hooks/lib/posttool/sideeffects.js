@@ -9,6 +9,7 @@ const path = require("path");
 const { spawnBounded } = require("../spawn-bounded");
 const { stateDir } = require("../state-dir");
 const { tkrSpawnSync } = require("./tkr-spawn");
+const { tkrSpawnArgv } = require("../tkr-bin");
 
 const RECONCILE_EVERY_N = parseInt(process.env.TKR_RECONCILE_EVERY_N || "5", 10);
 const MODE_AUTO_EVERY_N = parseInt(process.env.TKR_MODE_AUTO_EVERY_N || "5", 10);
@@ -42,7 +43,8 @@ function writeLastActivity() {
 // stdin hits EOF.
 function spawnSessionRecord(rawInput) {
   try {
-    const child = spawnBounded("tkr", ["session", "record-event"], {
+    const { cmd, argv } = tkrSpawnArgv(["session", "record-event"]);
+    const child = spawnBounded(cmd, argv, {
       detached: true,
       stdio: ["pipe", "ignore", "ignore"],
       windowsHide: true,
@@ -64,9 +66,10 @@ function spawnSessionRecord(rawInput) {
 function spawnReadCacheInvalidate(filePath) {
   if (!filePath) return;
   try {
+    const { cmd, argv } = tkrSpawnArgv(["read-cache", "invalidate", "--quiet", filePath]);
     const child = spawnBounded(
-      "tkr",
-      ["read-cache", "invalidate", "--quiet", filePath],
+      cmd,
+      argv,
       { detached: true, stdio: "ignore", windowsHide: true },
       2_000,
     );
@@ -82,9 +85,12 @@ function spawnReadCacheInvalidate(filePath) {
 function spawnFlipExtraRead(sessionID, filePath) {
   if (!sessionID || !filePath) return;
   try {
-    const child = spawnBounded(
-      "tkr",
+    const { cmd, argv } = tkrSpawnArgv(
       ["telemetry", "flip-extra-read", "--session", sessionID, "--path", filePath],
+    );
+    const child = spawnBounded(
+      cmd,
+      argv,
       { detached: true, stdio: "ignore", windowsHide: true },
       5_000,
     );
@@ -113,9 +119,12 @@ function maybeSpawnReconcile(sessionID) {
     fs.writeFileSync(tmp, String(count));
     fs.renameSync(tmp, p.reconcileCounter);
     if (count % RECONCILE_EVERY_N !== 0) return;
-    const child = spawnBounded(
-      "tkr",
+    const { cmd, argv } = tkrSpawnArgv(
       ["signals", "reconcile-decisions", "--session", sessionID || ""],
+    );
+    const child = spawnBounded(
+      cmd,
+      argv,
       { detached: true, stdio: "ignore", windowsHide: true },
       10_000,
     );
@@ -145,7 +154,8 @@ function maybeSpawnModeAuto() {
     fs.writeFileSync(tmp, String(count));
     fs.renameSync(tmp, p.modeAutoCounter);
     if (count % MODE_AUTO_EVERY_N !== 0) return;
-    const child = spawnBounded("tkr", ["mode", "auto"], {
+    const { cmd, argv } = tkrSpawnArgv(["mode", "auto"]);
+    const child = spawnBounded(cmd, argv, {
       detached: true,
       stdio: "ignore",
       windowsHide: true,
@@ -228,7 +238,8 @@ function spawnStatuslineUpdate(workspaceDir, sessionID, transcriptPath) {
     const env = Object.keys(extra).length
       ? Object.assign({}, process.env, extra)
       : process.env;
-    const child = spawnBounded("tkr", ["statusline-update"], {
+    const { cmd, argv } = tkrSpawnArgv(["statusline-update"], env);
+    const child = spawnBounded(cmd, argv, {
       detached: true,
       stdio: "ignore",
       windowsHide: true,

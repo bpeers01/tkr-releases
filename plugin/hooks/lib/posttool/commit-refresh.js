@@ -28,6 +28,7 @@
 // token after `git`.
 
 const { spawnBounded } = require("../spawn-bounded");
+const { tkrSpawnArgv } = require("../tkr-bin");
 
 // Match `git <verb>` where verb mutates committed history.
 // `reset` is included because `git reset` can rewrite the working tree
@@ -53,9 +54,10 @@ function shouldFire(event) {
 // is already fresh, so this is safe to over-fire.
 function spawnDetached(args, timeoutMs) {
   try {
+    const { cmd, argv } = tkrSpawnArgv(args);
     const child = spawnBounded(
-      "tkr",
-      args,
+      cmd,
+      argv,
       { detached: true, stdio: "ignore", windowsHide: true },
       timeoutMs,
     );

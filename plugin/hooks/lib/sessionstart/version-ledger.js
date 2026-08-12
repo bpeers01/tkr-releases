@@ -24,6 +24,7 @@ const path = require("path");
 const { spawnSync } = require("child_process");
 const { stateDir } = require("../state-dir");
 const { rotateIfLarge } = require("../rotate-jsonl");
+const { tkrSpawnArgv } = require("../tkr-bin");
 
 function ledgerPath() {
   return path.join(stateDir(), "version-ledger.jsonl");
@@ -38,7 +39,8 @@ function ledgerPath() {
 function resolveTkrVersion() {
   if (process.env.TKR_VERSION) return process.env.TKR_VERSION;
   try {
-    const r = spawnSync("tkr", ["--version"], {
+    const { cmd, argv } = tkrSpawnArgv(["--version"]);
+    const r = spawnSync(cmd, argv, {
       encoding: "utf8",
       timeout: 1000,
       windowsHide: true,

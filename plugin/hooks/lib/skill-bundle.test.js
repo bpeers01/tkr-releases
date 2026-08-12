@@ -191,13 +191,56 @@ test("resolveBundleDir returns null when the skill ships no bundle", () => {
   assert.equal(sb.resolveBundleDir("tkr:search", root), null);
 });
 
-test("resolveBundleDir prefers the most recently touched version dir", () => {
+test("resolveBundleDir prefers the highest-semver version dir, not merely the newest mtime", () => {
   const { root, mk } = fixture();
+  // Older version but freshly touched (e.g. re-extracted) must still lose
+  // to the higher version — mtime only disambiguates within one version.
   const older = mk("2.1.200", "aaa", "claude-api", [["shared/a.md", 400]]);
   const newer = mk("2.1.226", "bbb", "claude-api", [["shared/a.md", 400]]);
-  fs.utimesSync(older, new Date(1000), new Date(1000));
-  fs.utimesSync(newer, new Date(9_000_000), new Date(9_000_000));
-  assert.equal(sb.resolveBundleDir("claude-api", root), newer);
+  fs.utimesSync(older, new Date(9_000_000), new Date(9_000_000));
+  fs.utimesSync(newer, new Date(1000), new Date(1000));
+  assert.deepEqual(sb.resolveBundleDir("claude-api", root), { dir: newer, version: "2.1.226" });
+});
+
+test("resolveBundleDir breaks ties within one version by newest mtime", () => {
+  const { root, mk } = fixture();
+  const a = mk("2.1.226", "aaa", "claude-api", [["shared/a.md", 400]]);
+  const b = mk("2.1.226", "bbb", "claude-api", [["shared/a.md", 400]]);
+  fs.utimesSync(a, new Date(1000), new Date(1000));
+  fs.utimesSync(b, new Date(9_000_000), new Date(9_000_000));
+  assert.deepEqual(sb.resolveBundleDir("claude-api", root), { dir: b, version: "2.1.226" });
+});
+
+test("resolveBundleDir skips an empty candidate even when it is newest (#219)", () => {
+  const { root, mk } = fixture();
+  const populated = mk("2.1.226", "aaa", "claude-api", [["shared/a.md", 400]]);
+  fs.utimesSync(populated, new Date(1000), new Date(1000));
+  // Content pruned, directory left behind — mtime still newer than the
+  // populated one, but it must never win.
+  const emptyDir = path.join(root, "2.1.226", "bbb", "claude-api");
+  fs.mkdirSync(emptyDir, { recursive: true });
+  fs.utimesSync(emptyDir, new Date(9_000_000), new Date(9_000_000));
+  assert.deepEqual(sb.resolveBundleDir("claude-api", root), { dir: populated, version: "2.1.226" });
+});
+
+test("resolveBundleDir falls back to an older version when the newest has only empty candidates", () => {
+  const { root, mk } = fixture();
+  const older = mk("2.1.200", "aaa", "claude-api", [["shared/a.md", 400]]);
+  fs.mkdirSync(path.join(root, "2.1.226", "bbb", "claude-api"), { recursive: true });
+  assert.deepEqual(sb.resolveBundleDir("claude-api", root), { dir: older, version: "2.1.200" });
+});
+
+test("compareVersions orders numerically, not lexically", () => {
+  assert.ok(sb.compareVersions("2.1.9", "2.1.10") < 0);
+  assert.ok(sb.compareVersions("2.1.226", "2.1.200") > 0);
+  assert.equal(sb.compareVersions("2.1.226", "2.1.226"), 0);
+});
+
+test("newestVersionPresent reads the version dir regardless of skill", () => {
+  const { root, mk } = fixture();
+  mk("2.1.9", "a", "other-skill", [["x.md", 10]]);
+  mk("2.1.226", "b", "other-skill", [["x.md", 10]]);
+  assert.equal(sb.newestVersionPresent(root), "2.1.226");
 });
 
 test("measureBundle totals bytes/4 across the tree, largest first", () => {
@@ -236,6 +279,119 @@ test("bundleFor caches the miss so plugin skills skip the temp walk", () => {
     if (prev === undefined) delete process.env.TKR_STATE_DIR;
     else process.env.TKR_STATE_DIR = prev;
   }
+});
+
+test("bundleFor flags crossVersion when a newer version dir exists but has no tree for this skill", () => {
+  const { root, mk } = fixture();
+  const state = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-state-"));
+  const prev = process.env.TKR_STATE_DIR;
+  process.env.TKR_STATE_DIR = state;
+  try {
+    mk("2.1.221", "aaa", "dataviz", [["a.md", 400]]);
+    // A newer CLI version is present on disk (it extracted some other
+    // skill) but never touched dataviz — resolution still falls back to
+    // 2.1.221, and that fallback must be visible, not silent (#219).
+    mk("2.1.226", "bbb", "some-other-skill", [["y.md", 40]]);
+    const bundle = sb.bundleFor("dataviz", { root });
+    assert.equal(bundle.version, "2.1.221");
+    assert.equal(bundle.crossVersion, true);
+    assert.match(sb.buildWarning("dataviz", bundle, 100), /2\.1\.221/);
+  } finally {
+    if (prev === undefined) delete process.env.TKR_STATE_DIR;
+    else process.env.TKR_STATE_DIR = prev;
+  }
+});
+
+test("bundleFor does not flag crossVersion when resolved from the newest version present", () => {
+  const { root, mk } = fixture();
+  const state = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-state-"));
+  const prev = process.env.TKR_STATE_DIR;
+  process.env.TKR_STATE_DIR = state;
+  try {
+    mk("2.1.226", "bbb", "claude-api", [["a.md", 400]]);
+    const bundle = sb.bundleFor("claude-api", { root });
+    assert.equal(bundle.crossVersion, false);
+  } finally {
+    if (prev === undefined) delete process.env.TKR_STATE_DIR;
+    else process.env.TKR_STATE_DIR = prev;
+  }
+});
+
+// The first invocation of a bundled skill runs BEFORE its tree exists
+// (PreToolUse precedes the tool; extraction is a skill-load side effect
+// of the invocation itself), so it measures nothing and cannot be
+// gated. The SECOND invocation must see the tree the first one
+// extracted — a trusted negative entry kept the gate blind for a full
+// MISS_TTL_MS of dispatches instead of exactly one (#219).
+test("bundleFor: a colon-less skill's fresh tree is visible on the very next call (#219)", () => {
+  const { root, mk } = fixture();
+  const state = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-state-"));
+  const prev = process.env.TKR_STATE_DIR;
+  process.env.TKR_STATE_DIR = state;
+  try {
+    const t0 = 1_000_000_000_000;
+    // Invocation 1: no tree yet...
+    assert.equal(sb.bundleFor("dataviz", { root, now: t0 }), null);
+    // ...which then extracts it by running.
+    mk("2.1.226", "aaa", "dataviz", [["a.md", 400]]);
+    // Invocation 2, seconds later — deep inside MISS_TTL_MS.
+    const bundle = sb.bundleFor("dataviz", { root, now: t0 + 5_000 });
+    assert.ok(bundle, "second invocation must see the tree the first one extracted");
+    assert.equal(bundle.tokens, 100);
+  } finally {
+    if (prev === undefined) delete process.env.TKR_STATE_DIR;
+    else process.env.TKR_STATE_DIR = prev;
+  }
+});
+
+test("bundleFor: a stale pre-fix negative entry does not mask a colon-less skill's tree", () => {
+  const { root, mk } = fixture();
+  const state = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-state-"));
+  const prev = process.env.TKR_STATE_DIR;
+  process.env.TKR_STATE_DIR = state;
+  try {
+    const t0 = 1_000_000_000_000;
+    // A cache file written by a build that still recorded candidate
+    // misses must not blind an upgraded one.
+    fs.writeFileSync(
+      path.join(state, "skill-bundles.json"),
+      JSON.stringify({ schema: 2, entries: { dataviz: { dir: null, ts: t0 } } })
+    );
+    mk("2.1.226", "aaa", "dataviz", [["a.md", 400]]);
+    assert.equal(sb.bundleFor("dataviz", { root, now: t0 + 5_000 }).tokens, 100);
+  } finally {
+    if (prev === undefined) delete process.env.TKR_STATE_DIR;
+    else process.env.TKR_STATE_DIR = prev;
+  }
+});
+
+test("bundleFor: a colon-less miss writes no negative entry", () => {
+  const { root } = fixture();
+  const state = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-state-"));
+  const prev = process.env.TKR_STATE_DIR;
+  process.env.TKR_STATE_DIR = state;
+  try {
+    assert.equal(sb.bundleFor("dataviz", { root }), null);
+    let entries = {};
+    try {
+      entries = JSON.parse(fs.readFileSync(path.join(state, "skill-bundles.json"), "utf8")).entries;
+    } catch {
+      /* no cache file at all is equally correct */
+    }
+    assert.ok(!("dataviz" in entries), "candidate miss must not be cached");
+  } finally {
+    if (prev === undefined) delete process.env.TKR_STATE_DIR;
+    else process.env.TKR_STATE_DIR = prev;
+  }
+});
+
+test("looksBundled: a colon means namespaced, never bundled", () => {
+  assert.equal(sb.looksBundled("claude-api"), true);
+  assert.equal(sb.looksBundled("dataviz"), true);
+  assert.equal(sb.looksBundled("tkr:search"), false);
+  assert.equal(sb.looksBundled("blueprint:design"), false);
+  assert.equal(sb.looksBundled(""), false);
+  assert.equal(sb.looksBundled(null), false);
 });
 
 test("bundleFor re-measures when the cached directory has gone (CLI upgrade)", () => {

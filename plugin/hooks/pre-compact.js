@@ -21,12 +21,14 @@ const { readStdinWithTimeout, hooksDisabled } = require("./lib/stdin-with-timeou
 const { getTelemetryPath } = require("./lib/statusline-path");
 const { stateDir } = require("./lib/state-dir");
 const { getSessionID } = require("./lib/session-id");
+const { tkrSpawnArgv } = require("./lib/tkr-bin");
 
 // M-01: spawnSync wrapper with SIGKILL on timeout (vs execFileSync's SIGTERM
 // which is a no-op on Windows) + 10MB maxBuffer.
 function tkrSpawnSync(args, opts) {
   const o = opts || {};
-  const res = spawnSync("tkr", args, {
+  const { cmd, argv } = tkrSpawnArgv(args);
+  const res = spawnSync(cmd, argv, {
     encoding: "utf8",
     timeout: o.timeout || 5000,
     killSignal: "SIGKILL",

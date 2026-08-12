@@ -130,13 +130,42 @@ Convention: `~/.tkr/<feature>.{json,jsonl}` (honor `TKR_STATE_DIR` env):
   tree, keyed by skill name (INV-095). Feeds the `skill-invoked.js` gate
   so the hot path is one small read instead of a temp-dir walk: cold
   measure of the real 65-file `claude-api` tree is ~6.5ms, warm ~0.4ms.
-  Misses are cached too — plugin skills (`tkr:*`, `blueprint:*`) ship no
-  bundle and must not pay a walk per dispatch — but only for
-  `MISS_TTL_MS` (1h), so a CLI upgrade that adds a bundle is picked up
-  the same day rather than never. A positive entry is trusted only while
+  Misses are cached only for NAMESPACED skills — plugin skills (`tkr:*`,
+  `blueprint:*`) structurally ship no bundle and must not pay a walk per
+  dispatch — for `MISS_TTL_MS` (1h), so a CLI upgrade that adds a bundle
+  is picked up the same day rather than never. A colon-less name
+  (`looksBundled()`) neither trusts nor writes a negative entry (#219):
+  extraction happens at skill-LOAD time, strictly AFTER this PreToolUse
+  gate has decided, so the miss recorded by a bundled skill's first
+  invocation would otherwise mask the very tree that invocation extracts
+  and keep the gate blind for an hour of dispatches, not one. A
+  colon-less skill with genuinely no tree instead re-walks the bundle
+  root every dispatch — measured 1.9ms p50 / 3.2ms max against a real
+  17-version root, noise inside the <100ms hook budget. A positive
+  entry is trusted only while
   the directory it names still exists, since an upgrade relocates the
-  tree under a new `<version>/<hash>`. Sizes are `bytes/4` from `stat`;
-  file contents are never read. **The tree is not an upper bound on the
+  tree under a new `<version>/<hash>`. Several CLI versions coexist under
+  the bundle root; `resolveBundleDir` (#219) prefers the highest-semver
+  version that has a NON-EMPTY tree for the skill, falling back to older
+  ones — an empty directory (content pruned, directory left behind; 9 of
+  13 `claude-api` dirs observed empty on one box) never wins the
+  newest-mtime race, which previously let a stale empty dir report a
+  silent `tokens: 0, files: 0`. When the resolved version is not the
+  newest version directory present on disk, `bundleFor()` sets
+  `crossVersion: true` and both the gate text and the ledger's
+  `bundle_dir_version` / `bundle_cross_version` fields (schema v5) say so
+  — the hook is never told which version is about to load, so this is a
+  visible lower-bound flag, not a fix for the underlying blind spot. The
+  first-ever invocation of a skill on a box (no tree extracted yet at
+  all) is still ungated and cannot be otherwise: the decision is due
+  before the tool runs, and a null bundle is ambiguous between "ships no
+  bundle" (nearly every skill) and "first invocation of a big one", so
+  the gate fails open by design. The SECOND invocation is gated — the
+  first one's own skill-load extraction puts the tree on disk, and the
+  no-negative-cache rule above makes it visible immediately (#219).
+  Sizes are `bytes/4` from `stat` (cache
+  schema v2 stores raw bytes alongside — see below); file contents are
+  never read. **The tree is not an upper bound on the
   payload** — it bounds only the file-body portion, and only loosely.
   Verified against the transcript for the measured `claude-api`
   injection: 32 of 65 files shipped (all of `shared/`, all of the ONE
@@ -152,10 +181,13 @@ Convention: `~/.tkr/<feature>.{json,jsonl}` (honor `TKR_STATE_DIR` env):
   also low in the token dimension: the same block was charged ~253,800
   tokens, i.e. **2.754 chars/token**, so `bytes/4` under-predicts by
   ~45%. Stored size is therefore one end of a range, never a ceiling,
-  and gate text quotes both ends. That same estimator is
-  `internal/tracking/tracker.go:586`, used by `internal/bench/` —
-  whether it under-counts there too is open, and one sample is not a
-  calibration.
+  and gate text quotes both ends. That estimator was calibrated
+  in #218: `tracking.EstimateTokens` is now `bytes/2.4` (n=315 across all
+  content classes, 2.0–2.75 B/t; see
+  `docs/reports/2026-08-10-estimator-calibration.md`), while this file's
+  stored tokens deliberately stay `bytes/4` — they are `costRange()`'s low
+  end by construction. Ledger schema v4 records `bundle_bytes` so rows are
+  re-derivable under any divisor.
 - `slash-marker-<sid>.json` — one-turn record that the user's prompt was
   a slash command, written by `user-prompt-submit.js` (the only hook that
   sees the raw prompt) and read by `skill-invoked.js` (which fires later

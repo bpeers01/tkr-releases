@@ -7,11 +7,14 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
+const { execFileSync } = require("child_process");
+
 const {
   loadContinue,
   loadContinueAdvisory,
   AUTO_CONTINUE_MAX_AGE_MS,
   AUTO_CONTINUE_MAX_BYTES,
+  handoffsDir,
 } = require("./continue");
 
 const BODY = "# Handoff\n\n## Next Action\nRun the migration.\n";
@@ -195,6 +198,141 @@ test("the systemMessage never repeats the carry-over body", () => {
   const out = withStateDir(() => loadContinue("sid1", root, "clear"));
   assert.doesNotMatch(out.systemMessage, /Run the migration\./);
   assert.ok(out.systemMessage.length < 200, "stays one glanceable line");
+});
+
+// --- #262: handoffsDir must resolve to the MAIN checkout, not the cwd -----
+//
+// A plain cwd-relative `.tkr/handoffs` lands in a git worktree's own tree,
+// invisible to /continue running from the main checkout. These pin
+// handoffsDir() resolving through `git rev-parse --git-common-dir` and the
+// TKR_HANDOFFS_DIR override still winning outright.
+
+function withEnv(key, value, fn) {
+  const prev = process.env[key];
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+  try {
+    return fn();
+  } finally {
+    if (prev === undefined) delete process.env[key];
+    else process.env[key] = prev;
+  }
+}
+
+function gitAvailable() {
+  try {
+    execFileSync("git", ["--version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Build a throwaway main checkout + linked worktree. Returns
+// { mainRoot, worktreeRoot } or null if git setup fails (sandboxed CI etc.)
+function makeGitWorktree() {
+  const mainRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-262-main-"));
+  const run = (args, cwd) =>
+    execFileSync("git", args, { cwd, stdio: ["ignore", "ignore", "ignore"] });
+  try {
+    run(["init", "-q"], mainRoot);
+    run(["config", "user.email", "test@example.com"], mainRoot);
+    run(["config", "user.name", "test"], mainRoot);
+    fs.writeFileSync(path.join(mainRoot, "README.md"), "x");
+    run(["add", "README.md"], mainRoot);
+    run(["commit", "-q", "-m", "init"], mainRoot);
+    const worktreeRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "tkr-262-wt-"),
+    );
+    fs.rmdirSync(worktreeRoot); // git worktree add requires a non-existing dir
+    run(["worktree", "add", "-q", worktreeRoot, "-b", "tkr-262-branch"], mainRoot);
+    return { mainRoot, worktreeRoot };
+  } catch {
+    return null;
+  }
+}
+
+test("handoffsDir resolves to the main checkout root from inside a worktree", (t) => {
+  if (!gitAvailable()) {
+    t.skip("git not available");
+    return;
+  }
+  const wt = makeGitWorktree();
+  if (!wt) {
+    t.skip("git worktree setup failed in this sandbox");
+    return;
+  }
+  const dir = withEnv("TKR_HANDOFFS_DIR", undefined, () =>
+    handoffsDir(wt.worktreeRoot),
+  );
+  const expected = path.join(
+    fs.realpathSync(wt.mainRoot),
+    ".tkr",
+    "handoffs",
+  );
+  assert.strictEqual(dir, expected);
+  assert.notStrictEqual(
+    dir,
+    path.join(wt.worktreeRoot, ".tkr", "handoffs"),
+    "must not resolve to the worktree's own .tkr/handoffs",
+  );
+});
+
+// tkr is hook-resident, and git exports GIT_DIR into every hook it runs.
+// Git prefers GIT_DIR over the directory named by `cwd`, so an un-scrubbed
+// `rev-parse` here would resolve handoffs against whatever repo the ambient
+// environment points at — writing this session's handoff into a stranger's
+// checkout. Per the AGENTS.md gotcha, the repro sets GIT_DIR ALONE: adding
+// GIT_WORK_TREE masks the bug.
+test("handoffsDir ignores an ambient GIT_DIR pointing at another repo", (t) => {
+  if (!gitAvailable()) {
+    t.skip("git not available");
+    return;
+  }
+  const wt = makeGitWorktree();
+  const other = makeGitWorktree();
+  if (!wt || !other) {
+    t.skip("git worktree setup failed in this sandbox");
+    return;
+  }
+  const dir = withEnv("GIT_DIR", path.join(other.mainRoot, ".git"), () =>
+    withEnv("TKR_HANDOFFS_DIR", undefined, () =>
+      handoffsDir(wt.worktreeRoot),
+    ),
+  );
+  assert.strictEqual(
+    dir,
+    path.join(fs.realpathSync(wt.mainRoot), ".tkr", "handoffs"),
+  );
+  assert.ok(
+    !dir.startsWith(fs.realpathSync(other.mainRoot)),
+    "must not resolve into the repo named by an ambient GIT_DIR",
+  );
+});
+
+test("TKR_HANDOFFS_DIR override wins even inside a git worktree", (t) => {
+  if (!gitAvailable()) {
+    t.skip("git not available");
+    return;
+  }
+  const wt = makeGitWorktree();
+  if (!wt) {
+    t.skip("git worktree setup failed in this sandbox");
+    return;
+  }
+  const override = path.join(os.tmpdir(), "tkr-262-override-handoffs");
+  const dir = withEnv("TKR_HANDOFFS_DIR", override, () =>
+    handoffsDir(wt.worktreeRoot),
+  );
+  assert.strictEqual(dir, override);
+});
+
+test("handoffsDir falls back to cwd-relative outside a git repo", () => {
+  const nonGitRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-262-nogit-"));
+  const dir = withEnv("TKR_HANDOFFS_DIR", undefined, () =>
+    handoffsDir(nonGitRoot),
+  );
+  assert.strictEqual(dir, path.join(nonGitRoot, ".tkr", "handoffs"));
 });
 
 // Pruning is a user action; the model cannot take it, so the hint has to

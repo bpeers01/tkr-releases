@@ -400,6 +400,16 @@ function vetoCheck(subagentType, toolInput) {
   if (process.env.TKR_WORK_VETO_DISABLED === "1") return none;
   try {
     const { cmd, argv } = tkrSpawnArgv(["route", "veto-check"]);
+    // INV-119: resolveTkrBin now returns null instead of a bare "tkr" when
+    // nothing resolves (no TKR_BIN, no install location, no PATH match) —
+    // there is genuinely no binary to spawn. Previously this same outcome
+    // reached spawnSync as a bare name and came back as an ENOENT res.error,
+    // classified below as "unreachable"; short-circuit to the same verdict
+    // here rather than letting spawnSync's synchronous "cmd must be a
+    // string" TypeError fall through to the generic catch below, which
+    // would misreport a resolution failure as "bad_response" (a check that
+    // ran and answered oddly, which this is not).
+    if (!cmd) return { verdict: null, unavailable: "unreachable" };
     const res = spawnSync(cmd, argv, {
       input: JSON.stringify({
         subagent_type: subagentType,

@@ -13,6 +13,7 @@
 // hooks.graduation_prompted = true.
 
 const { spawnSync } = require("child_process");
+const { tkrSpawnArgv } = require("../tkr-bin");
 
 // Cap the injected line so a pathological config can't push an unbounded
 // string into the session prefix.
@@ -28,7 +29,8 @@ const EXPECTED_PREFIX = "tkr: suggest mode";
 function loadGraduationNudge() {
   if (process.env.TKR_SUGGEST_NO_GRADUATION === "1") return "";
   try {
-    const res = spawnSync("tkr", ["gain", "--suggest", "--graduation"], {
+    const { cmd, argv } = tkrSpawnArgv(["gain", "--suggest", "--graduation"]);
+    const res = spawnSync(cmd, argv, {
       encoding: "utf8",
       timeout: 3000,
       killSignal: "SIGKILL",

@@ -20,6 +20,7 @@ const os = require("os");
 const path = require("path");
 const { spawn, spawnSync } = require("child_process");
 const { spawnBounded } = require("./lib/spawn-bounded");
+const { tkrSpawnArgv } = require("./lib/tkr-bin");
 const { readStdinWithTimeout, hooksDisabled } = require("./lib/stdin-with-timeout");
 const { rotateIfLarge } = require("./lib/rotate-jsonl");
 const { getTelemetryPath } = require("./lib/statusline-path");
@@ -127,9 +128,12 @@ const extractSessionID = getSessionID;
 // 5s hard kill cap so a hung child can't accumulate across sessions.
 function spawnRecordPromptEvent(rawInput, sid) {
   try {
+    const { cmd, argv } = tkrSpawnArgv([
+      "session", "record-event", "--source", "UserPromptSubmit", "--session-id", sid,
+    ]);
     const child = spawnBounded(
-      "tkr",
-      ["session", "record-event", "--source", "UserPromptSubmit", "--session-id", sid],
+      cmd,
+      argv,
       { detached: true, stdio: ["pipe", "ignore", "ignore"], windowsHide: true },
       5_000,
     );
@@ -865,9 +869,10 @@ function classifyRouteSync(promptText, input) {
     // transcript — unreproducible once transcripts rotate. Empty when
     // Claude Code supplied none; the Go side omits the field then.
     const promptID = (input && input.prompt_id) || "";
-    const argv = ["route", "classify", promptText, "--json"];
-    if (promptID) argv.push("--prompt-id", promptID);
-    const res = spawnSync("tkr", argv, {
+    const routeArgv = ["route", "classify", promptText, "--json"];
+    if (promptID) routeArgv.push("--prompt-id", promptID);
+    const { cmd, argv } = tkrSpawnArgv(routeArgv);
+    const res = spawnSync(cmd, argv, {
       timeout: ROUTE_SYNC_TIMEOUT_MS,
       stdio: "ignore",
       windowsHide: true,
@@ -1313,9 +1318,10 @@ function shapeNudgeContext(input, tel) {
 // Detached + unref'd so the hook returns immediately. stdio ignored.
 function spawnRouteClassify(promptText) {
   try {
+    const { cmd, argv } = tkrSpawnArgv(["route", "classify", promptText, "--json"]);
     const child = spawnBounded(
-      "tkr",
-      ["route", "classify", promptText, "--json"],
+      cmd,
+      argv,
       { detached: true, stdio: "ignore", windowsHide: true },
       5_000,
     );

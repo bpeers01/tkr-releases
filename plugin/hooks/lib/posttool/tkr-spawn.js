@@ -6,10 +6,12 @@
 // `killSignal: "SIGKILL"` and `maxBuffer` (default 1MB; bumped to 10MB here).
 
 const { spawnSync } = require("child_process");
+const { tkrSpawnArgv } = require("../tkr-bin");
 
 function tkrSpawnSync(args, opts) {
   const o = opts || {};
-  const res = spawnSync("tkr", args, {
+  const { cmd, argv } = tkrSpawnArgv(args);
+  const res = spawnSync(cmd, argv, {
     encoding: "utf8",
     timeout: o.timeout || 3000,
     killSignal: "SIGKILL",

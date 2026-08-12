@@ -94,7 +94,12 @@ LOCK="$DIR/watcher.pid"
 echo $$ > "$LOCK"
 trap '[ "$(cat "$LOCK" 2>/dev/null)" = "$$" ] && rm -f "$LOCK"' EXIT
 
-LEDGER="$STATE_DIR/playbook-events.jsonl"
+# Dedicated keepalive ledger (2026-08-11). These rows were ~1% of
+# playbook-events.jsonl and were rotated out of it by L5 cache-reconcile
+# volume roughly every 31h, capping keepalive history at ~2.5 days. Readers
+# span both files; see telemetry.KeepaliveLedgerPath in Go for the full
+# reasoning and the deliberate absence of rotation here.
+LEDGER="$STATE_DIR/keepalive-events.jsonl"
 
 # Emit a keepalive_suppressed ledger row via heredoc-to-tmpfile (see the
 # fire emit for why). Shared by the respawn gate (INV-063) and the

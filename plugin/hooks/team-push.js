@@ -22,13 +22,15 @@
 "use strict";
 
 const { spawnBounded } = require("./lib/spawn-bounded");
+const { tkrSpawnArgv } = require("./lib/tkr-bin");
 
 function main() {
   if (process.env.TKR_TEAM_DISABLE === "1") return;
   try {
+    const { cmd, argv } = tkrSpawnArgv(["team", "push", "--auto"]);
     const child = spawnBounded(
-      "tkr",
-      ["team", "push", "--auto"],
+      cmd,
+      argv,
       { detached: true, stdio: "ignore", windowsHide: true },
       120_000,
     );

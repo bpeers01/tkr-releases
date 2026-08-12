@@ -27,6 +27,7 @@
 const { spawnBounded } = require("./lib/spawn-bounded");
 const { readStdinWithTimeout, hooksDisabled } = require("./lib/stdin-with-timeout");
 const { getSessionID } = require("./lib/session-id");
+const { tkrSpawnArgv } = require("./lib/tkr-bin");
 
 const {
   getBrevityMode,
@@ -332,7 +333,8 @@ function runMain(inputRaw) {
   // concurrent graph-build runs.
   if (shouldFireSearchRefresh()) {
     try {
-      const child = spawnBounded("tkr", ["search", "--refresh"], {
+      const { cmd, argv } = tkrSpawnArgv(["search", "--refresh"]);
+      const child = spawnBounded(cmd, argv, {
         detached: true,
         stdio: "ignore",
         windowsHide: true,

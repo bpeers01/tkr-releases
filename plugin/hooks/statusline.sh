@@ -754,10 +754,31 @@ fi
 # ── Route verdict (ADR-0010 statusline channel) ──────────────────────
 # Always-on display of the effort-routing recommendation. Context
 # injection is reserved for sustained mismatches, so the statusline is
-# where the per-turn verdict lives. Class truncated to keep it compact.
+# where the per-turn verdict lives.
+#
+# INV-106: RT_CLASS_MAX is the longest class route.ReachableProfiles()
+# can actually produce today (status_classification, 21 runes —
+# internal/route/classify.go) so real class names never get cut. A
+# future longer class still falls through to the boundary-safe branch
+# below instead of the old blind `:0:12` slice, which cut
+# `localized_edit` into `localized_ed` — a truncated string with no
+# marker, indistinguishable from a real (invented) class name.
+RT_CLASS_MAX=21
 RT_BADGE=""
 if [ -n "${TKR_ROUTE_EFFORT:-}" ]; then
-  RT_CLASS_SHORT="${TKR_ROUTE_CLASS:0:12}"
+  RT_CLASS_SHORT="$TKR_ROUTE_CLASS"
+  if [ "${#RT_CLASS_SHORT}" -gt "$RT_CLASS_MAX" ]; then
+    RT_TRUNC="${RT_CLASS_SHORT:0:$RT_CLASS_MAX}"
+    RT_BOUNDARY="${RT_TRUNC%_*}"
+    if [ -n "$RT_BOUNDARY" ] && [ "$RT_BOUNDARY" != "$RT_TRUNC" ]; then
+      # Cut back to the last complete snake_case segment within budget.
+      RT_CLASS_SHORT="${RT_BOUNDARY}..."
+    else
+      # No underscore within budget (or the whole trunc IS one segment) —
+      # still mark the cut so it never reads as a real class name.
+      RT_CLASS_SHORT="${RT_TRUNC}..."
+    fi
+  fi
   if [ -n "$RT_CLASS_SHORT" ]; then
     RT_BADGE="RT:${RT_CLASS_SHORT}→${TKR_ROUTE_EFFORT}"
   else

@@ -466,9 +466,25 @@ if ($WorkBadge) {
 
 # ADR-0010 route-verdict badge (parity with statusline.sh RT_BADGE; ASCII
 # separator to stay safe under Windows PowerShell 5.1 encodings).
+#
+# INV-106: RtClassMax mirrors statusline.sh's RT_CLASS_MAX — the longest
+# class route.ReachableProfiles() produces today (status_classification,
+# 21 chars — internal/route/classify.go), so real class names never get
+# cut. Anything longer still gets a boundary-safe, marked cut instead of
+# the old blind Substring(0, 12), which turned `localized_edit` into
+# `localized_ed` with no indication it had been shortened.
+$RtClassMax = 21
 if ($RouteEffort) {
     $rtClass = $RouteClass
-    if ($rtClass.Length -gt 12) { $rtClass = $rtClass.Substring(0, 12) }
+    if ($rtClass.Length -gt $RtClassMax) {
+        $rtTrunc = $rtClass.Substring(0, $RtClassMax)
+        $boundaryIdx = $rtTrunc.LastIndexOf('_')
+        if ($boundaryIdx -gt 0) {
+            $rtClass = $rtTrunc.Substring(0, $boundaryIdx) + "..."
+        } else {
+            $rtClass = "${rtTrunc}..."
+        }
+    }
     $rtLabel = if ($rtClass) { "${rtClass}>${RouteEffort}" } else { $RouteEffort }
     Write-Host " RT:${rtLabel}" -NoNewline -ForegroundColor DarkGray
 }

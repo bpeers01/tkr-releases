@@ -141,8 +141,8 @@ test("watcher.sh suppresses a respawned watcher with no activity since last fire
 
     assert.equal(r.status, 0, `watcher.sh exited ${r.status}, stderr: ${r.stderr}`);
 
-    const ledgerPath = path.join(stateDir, "playbook-events.jsonl");
-    assert.ok(fs.existsSync(ledgerPath), "expected playbook-events.jsonl to be written");
+    const ledgerPath = path.join(stateDir, "keepalive-events.jsonl");
+    assert.ok(fs.existsSync(ledgerPath), "expected keepalive-events.jsonl to be written");
     const lines = fs.readFileSync(ledgerPath, "utf8").trim().split("\n");
     const events = lines.map((l) => JSON.parse(l));
     const suppressed = events.find((e) => e.event === "keepalive_suppressed");
@@ -189,7 +189,7 @@ test("watcher.sh honors TKR_KEEPALIVE_DISABLE=1 (exit 0, no state writes, no led
 
     assert.equal(r.status, 0, `watcher.sh exited ${r.status}, stderr: ${r.stderr}`);
     assert.ok(
-      !fs.existsSync(path.join(stateDir, "playbook-events.jsonl")),
+      !fs.existsSync(path.join(stateDir, "keepalive-events.jsonl")),
       "disabled watcher must emit no ledger rows",
     );
     assert.ok(
@@ -279,7 +279,7 @@ test("watcher.sh takes over a lock held by another (live) pid instead of yieldin
     });
 
     assert.equal(r.status, 0, `watcher.sh exited ${r.status}, stderr: ${r.stderr}`);
-    const ledgerPath = path.join(stateDir, "playbook-events.jsonl");
+    const ledgerPath = path.join(stateDir, "keepalive-events.jsonl");
     assert.ok(
       fs.existsSync(ledgerPath),
       "expected a ledger write — pre-KEEP-005 the watcher yielded at the lock and exited silently",
@@ -458,7 +458,7 @@ test("watcher.sh fire stamps project last-fired and records project_key", { skip
     assert.ok(fs.existsSync(lastFired), "fire must stamp keepalive-projects/<key>/last-fired");
 
     const events = fs
-      .readFileSync(path.join(stateDir, "playbook-events.jsonl"), "utf8")
+      .readFileSync(path.join(stateDir, "keepalive-events.jsonl"), "utf8")
       .trim()
       .split("\n")
       .map((l) => JSON.parse(l));
@@ -509,7 +509,7 @@ test("watcher.sh suppresses when another watcher in the project already fired th
       "suppressed watcher must not stamp its own fired-at",
     );
     const events = fs
-      .readFileSync(path.join(stateDir, "playbook-events.jsonl"), "utf8")
+      .readFileSync(path.join(stateDir, "keepalive-events.jsonl"), "utf8")
       .trim()
       .split("\n")
       .map((l) => JSON.parse(l));

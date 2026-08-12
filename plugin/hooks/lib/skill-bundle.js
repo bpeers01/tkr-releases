@@ -43,10 +43,12 @@ const { stateDir } = require("./state-dir");
 
 const BUNDLE_ROOT = ["claude", "bundled-skills"];
 const CACHE_FILE = "skill-bundles.json";
-const CACHE_SCHEMA = 1;
-// A miss is cached too, so plugin skills (tkr:*, blueprint:*) don't pay a
-// temp-dir walk on every dispatch. Short TTL so a CLI upgrade that adds a
-// bundle is picked up the same day rather than never.
+const CACHE_SCHEMA = 2; // v2: entries carry raw bytes alongside tokens (#218)
+// A miss is cached ONLY for namespaced skills (tkr:*, blueprint:*), so
+// plugin skills don't pay a temp-dir walk on every dispatch. A colon-less
+// name never trusts a negative entry — see looksBundled() and bundleFor().
+// Short TTL so a CLI upgrade that adds a bundle is picked up the same day
+// rather than never.
 const MISS_TTL_MS = 60 * 60 * 1000;
 const DEFAULT_THRESHOLD_TOKENS = 25_000;
 // Redirect index is itself context. Cap it and say so when truncating —
@@ -119,8 +121,10 @@ function fmtK(n) {
   return `${Math.round(n / 1000)}K`;
 }
 
-// bytes/4 is tkr's canonical token estimator (internal/tracking/tracker.go:586).
-// On this content class it is wrong in both directions at once, and the
+// bytes/4 is this file's stored-size divisor — deliberately the low end of the
+// range below, NOT tkr's canonical estimator, which #218 calibrated to
+// bytes/2.4 (internal/tracking/tracker.go, EstimateTokens).
+// On this content class bytes/4 is wrong in both directions at once, and the
 // two errors do not cancel:
 //
 //   - the TREE overstates the PAYLOAD — language subtrees are skipped
@@ -139,9 +143,12 @@ function fmtK(n) {
 // at 4 chars/token as the low end, the same tree at 2.75 as the high
 // end. The measured claude-api injection (~250K) sits inside it.
 //
-// The estimator itself is not corrected here — one sample is not a
-// calibration, and EstimateTokens has bench baselines downstream. That
-// is its own investigation.
+// That investigation ran (#218): tracking.EstimateTokens is now calibrated
+// to 2.4 bytes/token from 315 transcript-attributed blocks, and the
+// skill-bundle content class itself measured 2.73 (n=4, p25-p75 2.70-2.76)
+// — so 2.75 here is class-backed, no longer a single sample. This file's
+// stored tokens deliberately stay bytes/4: they are the range's low end by
+// construction (see measureBundle).
 const DENSE_CHARS_PER_TOKEN = 2.75;
 
 function costRange(treeTokens) {
@@ -165,12 +172,21 @@ function indexLines(bundle) {
 // One sentence, used wherever the cost is stated. Says "estimate" out
 // loud, because both bounds are modelled and neither was measured on
 // this particular skill.
+//
+// When the resolved tree came from an older CLI version than the newest
+// one present on disk (#219 — several versions coexist in the bundle
+// root, and the hook is never told which one is about to load), the
+// measurement is stale by construction: append a visible note rather
+// than presenting it as current.
 function costSentence(bundle) {
   const r = costRange(bundle.tokens);
-  return (
+  let sentence =
     `${r.text} (${bundle.files}-file tree; estimated, not measured — ` +
-    `bytes/4 to bytes/2.75, and dense technical text lands near the high end)`
-  );
+    `bytes/4 to bytes/2.75, and dense technical text lands near the high end)`;
+  if (bundle.crossVersion) {
+    sentence += `; measured from CLI ${bundle.version}, not the newest version present — treat as a lower bound`;
+  }
+  return sentence;
 }
 
 // The text handed back on a deny. Must be actionable on its own: the
@@ -224,8 +240,9 @@ function buildAskReason(skill, bundle) {
 // tokens to narrate it would make the problem worse.
 function buildWarning(skill, bundle, threshold) {
   const r = costRange(bundle.tokens);
+  const staleNote = bundle.crossVersion ? ` (measured from CLI ${bundle.version}, not the newest present)` : "";
   return (
-    `tkr: "${skill}" auto-invoked — injecting an estimated ${r.text} ` +
+    `tkr: "${skill}" auto-invoked — injecting an estimated ${r.text}${staleNote} ` +
     `(${bundle.files}-file tree, threshold ${fmt(threshold)}). ` +
     `Not filterable, stays in the cached prefix. ` +
     `TKR_SKILL_GATE=ask to be asked first, =deny to block; /${skill} always passes.`
@@ -240,20 +257,77 @@ function bundleRootDir() {
   return path.join(os.tmpdir(), ...BUNDLE_ROOT);
 }
 
-// <tmp>/claude/bundled-skills/<ccver>/<hash>/<skill>. Several CLI
-// versions coexist; prefer the newest directory that actually contains
-// this skill rather than trusting a version string we may not have been
-// handed on stdin.
-function resolveBundleDir(skill, rootOverride) {
-  const root = rootOverride || bundleRootDir();
-  let best = null;
-  let bestMtime = -1;
+// True if `dir` (or any subdirectory) contains at least one file.
+// Content gets pruned out from under these trees while the directory
+// itself lingers (9 of 13 claude-api dirs observed empty on one box);
+// an empty directory must never be treated as a resolved bundle — see
+// resolveBundleDir (#219).
+function dirHasFile(dir) {
+  let ents;
+  try {
+    ents = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+  for (const e of ents) {
+    if (e.isFile()) return true;
+    if (e.isDirectory() && dirHasFile(path.join(dir, e.name))) return true;
+  }
+  return false;
+}
+
+// Numeric dot-separated compare ("2.1.9" < "2.1.10"); a non-numeric
+// segment sorts as -1 (below any real release) rather than throwing.
+function compareVersions(a, b) {
+  const pa = String(a).split(".").map((p) => (Number.isFinite(Number(p)) && p !== "" ? Number(p) : -1));
+  const pb = String(b).split(".").map((p) => (Number.isFinite(Number(p)) && p !== "" ? Number(p) : -1));
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const na = pa[i] ?? 0;
+    const nb = pb[i] ?? 0;
+    if (na !== nb) return na - nb;
+  }
+  return 0;
+}
+
+// The highest-semver version directory present under root, regardless
+// of whether it contains THIS skill. Used to flag a resolved bundle as
+// cross-version when it came from an older one (#219) — the hook is
+// never told which CLI version is about to load, so this is the best
+// available proxy for "is this measurement stale".
+function newestVersionPresent(root) {
   let versions;
   try {
     versions = fs.readdirSync(root);
   } catch {
     return null;
   }
+  let best = null;
+  for (const v of versions) {
+    if (best === null || compareVersions(v, best) > 0) best = v;
+  }
+  return best;
+}
+
+// <tmp>/claude/bundled-skills/<ccver>/<hash>/<skill>. Several CLI
+// versions coexist. Two rules, in order (#219):
+//   1. Prefer the highest-semver version that has a NON-EMPTY tree for
+//      this skill, falling back to older versions when the newest one
+//      has none. An empty directory (content pruned, directory left
+//      behind) is never a match — walking mtime alone let a stale empty
+//      dir win the "newest wins" race and report a silent zero.
+//   2. Within one version, several hash dirs can coexist (a re-extract
+//      of the same version); the newest-mtime non-empty one wins.
+// Returns { dir, version } or null.
+function resolveBundleDir(skill, rootOverride) {
+  const root = rootOverride || bundleRootDir();
+  let versions;
+  try {
+    versions = fs.readdirSync(root);
+  } catch {
+    return null;
+  }
+  versions.sort((a, b) => compareVersions(b, a));
   for (const v of versions) {
     let hashes;
     try {
@@ -261,6 +335,8 @@ function resolveBundleDir(skill, rootOverride) {
     } catch {
       continue;
     }
+    let best = null;
+    let bestMtime = -1;
     for (const h of hashes) {
       const cand = path.join(root, v, h, skill);
       let st;
@@ -269,20 +345,27 @@ function resolveBundleDir(skill, rootOverride) {
       } catch {
         continue;
       }
-      if (st.isDirectory() && st.mtimeMs > bestMtime) {
-        bestMtime = st.mtimeMs;
-        best = cand;
-      }
+      if (!st.isDirectory() || st.mtimeMs <= bestMtime) continue;
+      if (!dirHasFile(cand)) continue;
+      bestMtime = st.mtimeMs;
+      best = cand;
     }
+    if (best) return { dir: best, version: v };
   }
-  return best;
+  return null;
 }
 
-// stat only — never reads file contents. Token estimate is bytes/4,
-// the same approximation used everywhere else in tkr.
+// stat only — never reads file contents. Token estimate stays bytes/4 —
+// deliberately NOT the calibrated 2.4 divisor tracking.EstimateTokens now
+// uses (#218): costRange() reconstructs bytes from these tokens (t*4) for
+// its dense upper end, and the ask/deny texts present [bytes/4, bytes/2.75]
+// as an explicit range whose low end is bytes/4 by construction. Raw bytes
+// are measured alongside so the ledger row is re-derivable under any
+// divisor.
 function measureBundle(dir) {
   const index = [];
   let tokens = 0;
+  let bytes = 0;
   let files = 0;
   const walk = (d, rel) => {
     let ents;
@@ -306,13 +389,14 @@ function measureBundle(dir) {
       }
       const t = Math.floor(st.size / 4);
       tokens += t;
+      bytes += st.size;
       files += 1;
       index.push([r, t]);
     }
   };
   walk(dir, "");
   index.sort((a, b) => b[1] - a[1]);
-  return { dir, tokens, files, index };
+  return { dir, tokens, bytes, files, index };
 }
 
 function cachePath() {
@@ -339,32 +423,80 @@ function writeCache(cache) {
   }
 }
 
-// Returns { dir, tokens, files, index } or null when the skill has no
-// bundled tree. Cached both ways — see MISS_TTL_MS on why the negative
-// entry expires and the positive one does not.
+// version is undefined for a pre-#219 cache entry (schema unchanged —
+// this is an additive field, not a bump) or a rootOverride/root layout
+// this hook couldn't parse; either way "unknown version" must never
+// read as "cross-version", so an undefined version reports false.
+function crossVersionFor(version, rootOverride) {
+  if (!version) return false;
+  const newest = newestVersionPresent(rootOverride || bundleRootDir());
+  if (!newest) return false;
+  return compareVersions(version, newest) < 0;
+}
+
+// A guess, deliberately: plugin and user skills are namespaced
+// (`tkr:handoff`, `blueprint:design`) and structurally cannot be in the
+// CLI's compiled-in set, so a colon is a reliable NEGATIVE. A colon-less
+// name is merely POSSIBLY bundled. Being wrong costs one extra walk of
+// the bundle root per dispatch (measured 1.9ms p50 / 3.2ms max against
+// 17 version dirs) and never a wrong gate decision.
+function looksBundled(skill) {
+  return typeof skill === "string" && skill.length > 0 && !skill.includes(":");
+}
+
+// Returns { dir, tokens, files, index, version, crossVersion } or null
+// when the skill has no bundled tree. A positive result is cached; a
+// miss is cached only for namespaced skills (see MISS_TTL_MS). A
+// colon-less name neither trusts nor writes a negative entry: this hook
+// runs BEFORE the tool, and a bundled skill extracts its own tree at
+// skill-load time, so the miss the FIRST invocation records would
+// otherwise mask the tree that same invocation puts on disk — leaving
+// the gate blind for MISS_TTL_MS of dispatches instead of exactly one
+// (#219). crossVersion is recomputed on every call (one extra
+// readdirSync of the bundle root, not a tree walk) rather than cached,
+// because a version can be extracted after this skill's entry was
+// written, at which point a cached answer would go stale silently.
 function bundleFor(skill, opts) {
   const o = opts || {};
   const now = typeof o.now === "number" ? o.now : Date.now();
   const cache = readCache();
   const hit = cache.entries[skill];
   if (hit) {
-    if (hit.dir === null && now - hit.ts < MISS_TTL_MS) return null;
+    if (hit.dir === null && !looksBundled(skill) && now - hit.ts < MISS_TTL_MS) return null;
     // A positive entry is only trusted while the directory it named still
     // exists; a CLI upgrade relocates it under a new version+hash.
     if (hit.dir && fs.existsSync(hit.dir)) {
-      return { dir: hit.dir, tokens: hit.tokens, files: hit.files, index: hit.index || [] };
+      return {
+        dir: hit.dir,
+        tokens: hit.tokens,
+        bytes: hit.bytes,
+        files: hit.files,
+        index: hit.index || [],
+        version: hit.version,
+        crossVersion: crossVersionFor(hit.version, o.root),
+      };
     }
   }
-  const dir = resolveBundleDir(skill, o.root);
-  if (!dir) {
-    cache.entries[skill] = { dir: null, ts: now };
-    writeCache(cache);
+  const resolved = resolveBundleDir(skill, o.root);
+  if (!resolved) {
+    if (!looksBundled(skill)) {
+      cache.entries[skill] = { dir: null, ts: now };
+      writeCache(cache);
+    }
     return null;
   }
-  const m = measureBundle(dir);
-  cache.entries[skill] = { dir: m.dir, tokens: m.tokens, files: m.files, index: m.index, ts: now };
+  const m = measureBundle(resolved.dir);
+  cache.entries[skill] = {
+    dir: m.dir,
+    tokens: m.tokens,
+    bytes: m.bytes,
+    files: m.files,
+    index: m.index,
+    version: resolved.version,
+    ts: now,
+  };
   writeCache(cache);
-  return m;
+  return { ...m, version: resolved.version, crossVersion: crossVersionFor(resolved.version, o.root) };
 }
 
 module.exports = {
@@ -379,6 +511,10 @@ module.exports = {
   resolveBundleDir,
   measureBundle,
   bundleRootDir,
+  dirHasFile,
+  compareVersions,
+  newestVersionPresent,
+  looksBundled,
   DEFAULT_MODE,
   DEFAULT_THRESHOLD_TOKENS,
   DENSE_CHARS_PER_TOKEN,

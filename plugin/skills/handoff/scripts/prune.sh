@@ -34,7 +34,27 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-DIR="${TKR_HANDOFFS_DIR:-.tkr/handoffs}"
+# #262: resolve against the main checkout root when running inside a git
+# worktree, so this agrees with write-continue-here.sh's
+# resolve_handoffs_dir(). TKR_HANDOFFS_DIR still wins outright. Falls back
+# to today's cwd-relative behavior when git resolution is unavailable.
+DIR="${TKR_HANDOFFS_DIR:-}"
+if [ -z "$DIR" ]; then
+  # Scrub ambient GIT_* first — see write-continue-here.sh's
+  # resolve_handoffs_dir() for why (hooks inherit GIT_DIR and friends,
+  # which git prefers over the current directory).
+  _common_dir="$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
+    -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY GIT_TERMINAL_PROMPT=0 \
+    git rev-parse --git-common-dir 2>/dev/null || true)"
+  if [ -n "$_common_dir" ]; then
+    _common_dir="$(cd "$_common_dir" 2>/dev/null && pwd || true)"
+  fi
+  if [ -n "$_common_dir" ]; then
+    DIR="$(dirname "$_common_dir")/.tkr/handoffs"
+  else
+    DIR=".tkr/handoffs"
+  fi
+fi
 
 if [ ! -d "$DIR" ]; then
   echo '{"files":[],"action":"'"$ACTION"'","threshold_days":'"$THRESHOLD_DAYS"'}'

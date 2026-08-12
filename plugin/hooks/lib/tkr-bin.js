@@ -3,11 +3,25 @@
 // One resolver for "which tkr do I spawn, and how", shared by every hook
 // that shells out to the binary.
 //
-// Resolution order (unchanged from tkr-rewrite.js's original
+// Resolution order (mostly unchanged from tkr-rewrite.js's original
 // findTkrBinary, which this replaces):
 //   1. $TKR_BIN — an explicit override always wins.
 //   2. The platform's standard install location, probed for existence.
-//   3. Bare "tkr", resolved through PATH by the OS.
+//   3. "tkr" on PATH — resolved by THIS MODULE, never handed to the OS as
+//      a bare name (INV-119). Windows' CreateProcess searches the current
+//      directory before PATH, so spawnSync("tkr", ...) lets a repo-root
+//      tkr.exe answer in place of the real install — no PATH entry, no
+//      install, no prompt, just "open a repo that happens to ship a
+//      tkr.exe". Doing our own PATH walk (honoring PATHEXT on win32,
+//      see whichFromPath below) and handing spawn an absolute path closes
+//      that off structurally: cwd is never consulted, because nothing
+//      here ever asks the OS to resolve a name.
+//
+// resolveTkrBin returns null when NOTHING resolves — no TKR_BIN, no
+// install-location candidate, and no PATH match. That is a real "no tkr
+// found" outcome, not an error: every caller already treats a missing
+// binary as fail-open (ENOENT from execFileSync, "unreachable" from the
+// veto check), so there is no behavior to invent here.
 //
 // ── The JS entry point ──────────────────────────────────────────────────
 //
@@ -52,24 +66,36 @@ function resolveTkrBin(env = process.env) {
     candidates.push(path.join(home, ".local", "bin", "tkr"));
   }
 
-  candidates.push("tkr");
   for (const candidate of candidates) {
-    if (candidate === "tkr") return candidate;
     try {
       if (fs.existsSync(candidate)) return candidate;
     } catch {
       // ignore candidate probe failures
     }
   }
-  return "tkr";
+
+  // INV-119: the PATH fallback is resolved HERE, absolutely, honoring
+  // PATHEXT on win32 — never as a bare "tkr" handed to spawn. whichFromPath
+  // only walks directories literally listed on PATH; it never consults
+  // cwd, which is precisely the search step Windows' CreateProcess would
+  // otherwise perform on a bare name. null means no PATH entry matched
+  // either — genuinely nothing to spawn.
+  return whichFromPath("tkr", env);
 }
 
 // tkrSpawnArgv maps tkr-level arguments onto the {cmd, argv} pair the
 // child_process family actually takes, applying the JS-entry-point rule.
 // Pass the result straight through: spawnSync(cmd, argv, opts).
+//
+// bin (and therefore cmd) can be null when resolveTkrBin found nothing —
+// no TKR_BIN, no install location, no PATH match. That is deliberately
+// NOT special-cased into a fallback here: passing {cmd: null, ...} to
+// spawnSync/execFileSync throws synchronously, and every current caller
+// already wraps its spawn in a try/catch that treats "the binary would
+// not run" as fail-open, same as the pre-existing ENOENT path.
 function tkrSpawnArgv(args, env = process.env) {
   const bin = resolveTkrBin(env);
-  if (/\.(c|m)?js$/i.test(bin)) {
+  if (bin && /\.(c|m)?js$/i.test(bin)) {
     return { cmd: process.execPath, argv: [bin, ...args], bin };
   }
   return { cmd: bin, argv: [...args], bin };
@@ -77,18 +103,14 @@ function tkrSpawnArgv(args, env = process.env) {
 
 // ── Physical identity ───────────────────────────────────────────────────────
 //
-// resolveTkrBin answers "what do I type to spawn tkr", which is a COMMAND
-// STRING and deliberately allows the bare "tkr" PATH fallback. That is the
-// wrong question for identity: the resident runtime (#209) records
-// os.Executable() — a physical path — and a client has to decide whether the
-// runtime it found is running the same binary it would otherwise have
-// spawned.
-//
-// Naively resolving the command string breaks exactly the PATH-only install:
-// path.resolve("tkr") is cwd-relative, so it produces "<cwd>/tkr", never
-// matches, and the client rejects a perfectly good runtime forever — while
-// still firing a lazy start every 5s, which is worse than not having the
-// feature at all.
+// resolveTkrBin answers "what do I type to spawn tkr" — since INV-119, that
+// is always an absolute path or null, never a bare name. The identity
+// question is still separate, though: the resident runtime (#209) records
+// os.Executable() — a physical, symlink-resolved path — and a client has to
+// decide whether the runtime it found is running the same binary it would
+// otherwise have spawned. resolveTkrBin's answer is close but not quite
+// that: it may be a JS launcher path (node runs a DIFFERENT file underneath)
+// and it is not symlink-resolved.
 //
 // resolveTkrExe answers the identity question instead, and returns null when
 // it cannot be answered. Null is not "no tkr"; it is "identity unverifiable",
@@ -154,10 +176,9 @@ function samePhysicalPath(a, b) {
 //     resident path there costs an optimization and keeps the guarantee.
 function resolveTkrExe(env = process.env) {
   const bin = resolveTkrBin(env);
+  if (!bin) return null;
   if (/\.(c|m)?js$/i.test(bin)) return null;
-  const located = bin === "tkr" ? whichFromPath("tkr", env) : bin;
-  if (!located) return null;
-  return realpathOrNull(located);
+  return realpathOrNull(bin);
 }
 
 module.exports = { resolveTkrBin, tkrSpawnArgv, resolveTkrExe, samePhysicalPath };

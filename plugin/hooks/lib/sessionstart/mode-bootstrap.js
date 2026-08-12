@@ -22,6 +22,7 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const { tkrSpawnArgv } = require("../tkr-bin");
 
 const STALE_MS = 24 * 60 * 60 * 1000; // 24h
 
@@ -94,9 +95,10 @@ function spawnModeAuto(sid, spawnBoundedFn) {
   if (typeof spawnBoundedFn !== "function") return false;
   try {
     const env = Object.assign({}, process.env, { TKR_SESSION_ID: sid });
+    const { cmd, argv } = tkrSpawnArgv(["mode", "auto"], env);
     const child = spawnBoundedFn(
-      "tkr",
-      ["mode", "auto"],
+      cmd,
+      argv,
       { detached: true, stdio: "ignore", windowsHide: true, env },
       5_000
     );

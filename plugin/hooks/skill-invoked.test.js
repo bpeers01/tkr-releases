@@ -185,6 +185,30 @@ test("a slash-command turn is recorded as manual, not auto", () => {
   }
 });
 
+test("buildRow carries bundle_dir_version + bundle_cross_version when the bundle resolved one (#219)", () => {
+  const { buildRow } = require("./skill-invoked.js");
+  const row = buildRow(
+    { tool_name: "Skill", tool_input: { skill: "dataviz" }, session_id: "s" },
+    {
+      bundle: { tokens: 100, bytes: 400, files: 1, version: "2.1.221", crossVersion: true },
+      mode: "ask",
+      action: "ask",
+    }
+  );
+  assert.strictEqual(row.bundle_dir_version, "2.1.221");
+  assert.strictEqual(row.bundle_cross_version, true);
+});
+
+test("buildRow omits bundle_dir_version when the bundle carries no version (pre-#219 cache entry)", () => {
+  const { buildRow } = require("./skill-invoked.js");
+  const row = buildRow(
+    { tool_name: "Skill", tool_input: { skill: "claude-api" }, session_id: "s" },
+    { bundle: { tokens: 100, bytes: 400, files: 1 }, mode: "ask", action: "ask" }
+  );
+  assert.strictEqual(row.bundle_dir_version, undefined);
+  assert.strictEqual(row.bundle_cross_version, undefined);
+});
+
 // --- INV-095 gate, end to end ----------------------------------------
 
 const BIG_TOKENS = 200_000;
@@ -200,11 +224,12 @@ function runGated(payload, extraEnv, seed) {
   fs.writeFileSync(
     path.join(tmp, "skill-bundles.json"),
     JSON.stringify({
-      schema: 1,
+      schema: 2,
       entries: {
         "claude-api": {
           dir: treeDir,
           tokens: BIG_TOKENS,
+          bytes: BIG_TOKENS * 4,
           files: 65,
           index: [
             ["shared/model-migration.md", 44088],
@@ -269,6 +294,7 @@ test("gate default asks the user, and the question survives a no", () => {
     assert.strictEqual(rows[0].gate_mode, "ask");
     assert.strictEqual(rows[0].gate_action, "ask");
     assert.strictEqual(rows[0].bundle_tokens, BIG_TOKENS);
+    assert.strictEqual(rows[0].bundle_bytes, BIG_TOKENS * 4);
     assert.strictEqual(rows[0].bundle_files, 65);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });

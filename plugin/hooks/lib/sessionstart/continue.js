@@ -16,7 +16,9 @@
 
 const fs = require("fs");
 const path = require("path");
+const { execFileSync } = require("child_process");
 const { readLastSessionCWCache } = require("./last-session-cw");
+const { tkrSpawnArgv } = require("../tkr-bin");
 
 const L0R_CW_THRESHOLD = 200000;
 const FRESH_HANDOFF_MS = 24 * 60 * 60 * 1000; // 24h
@@ -27,9 +29,65 @@ const STALE_HANDOFF_MS = 3 * 24 * 60 * 60 * 1000; // 3d
 const AUTO_CONTINUE_MAX_AGE_MS = 10 * 60 * 1000; // 10min
 const AUTO_CONTINUE_MAX_BYTES = 24 * 1024;
 
+// #262: a plain cwd-relative `.tkr/handoffs` lands in the WORKTREE's own
+// tree when this runs inside a git worktree, invisible to /continue run
+// from the main checkout — the writer (write-continue-here.sh) and this
+// reader must resolve the same directory or they silently drift.
+// Priority: TKR_HANDOFFS_DIR (checked first, always wins) > main-checkout
+// root, derived from `git rev-parse --git-common-dir` (its parent is the
+// main worktree root — `--show-toplevel` is wrong here, it returns the
+// worktree itself) > today's cwd-relative fallback, used whenever there is
+// no git repo or the git call fails for any reason. Cached per resolved
+// base for the life of the process — this is hook-resident code and a git
+// shell-out on every SessionStart/hook fire is not free.
+const _mainRootCache = new Map();
+
+function resolveMainRoot(base) {
+  if (_mainRootCache.has(base)) return _mainRootCache.get(base);
+  let root = null;
+  try {
+    // Deny-by-default on GIT_*, mirroring internal/gitcmd's policy. This is
+    // hook-resident code, and git exports GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE
+    // into every hook it runs — git prefers those over the repository named by
+    // `cwd`, so an un-scrubbed call here would resolve handoffs against
+    // whatever repo the ambient environment points at. GIT_EXEC_PATH is the
+    // sole allowlist entry; GIT_TERMINAL_PROMPT=0 is always pinned so a
+    // credential prompt can never hang a SessionStart hook.
+    const gitEnv = {};
+    for (const [k, v] of Object.entries(process.env)) {
+      if (!k.startsWith("GIT_") || k === "GIT_EXEC_PATH") gitEnv[k] = v;
+    }
+    gitEnv.GIT_TERMINAL_PROMPT = "0";
+    const commonDir = execFileSync(
+      "git",
+      ["rev-parse", "--git-common-dir"],
+      {
+        cwd: base,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        env: gitEnv,
+      },
+    ).trim();
+    if (commonDir) {
+      const absCommonDir = path.isAbsolute(commonDir)
+        ? commonDir
+        : path.resolve(base, commonDir);
+      root = path.dirname(absCommonDir);
+    }
+  } catch {
+    root = null;
+  }
+  _mainRootCache.set(base, root);
+  return root;
+}
+
 function handoffsDir(projectPath) {
   const base = projectPath || process.cwd();
-  return path.join(base, ".tkr", "handoffs");
+  if (process.env.TKR_HANDOFFS_DIR) {
+    return process.env.TKR_HANDOFFS_DIR;
+  }
+  const mainRoot = resolveMainRoot(base);
+  return path.join(mainRoot || base, ".tkr", "handoffs");
 }
 
 // Scan .tkr/handoffs/ for V2-format session handoffs. Returns array of
@@ -63,7 +121,8 @@ function spawnContinueScan(sid, projectPath) {
     if (sid) {
       args.push("--exclude-sid", sid);
     }
-    const child = spawn("tkr", args, {
+    const { cmd, argv } = tkrSpawnArgv(args);
+    const child = spawn(cmd, argv, {
       detached: true,
       stdio: "ignore",
       windowsHide: true,

@@ -703,10 +703,59 @@ test("key matches the Go implementation", (t) => {
     cwd: proj,
     env: { ...process.env, TKR_STATE_DIR: dir },
   });
-  const report = JSON.parse(r.stdout);
+
+  // INV-126: an unguarded JSON.parse on empty/non-JSON stdout dies with
+  // "Unexpected end of JSON input" and no indication of WHY — a stale
+  // repo-root binary (predates `resident status --json`, or a build that
+  // failed silently) looks identical to a parser bug from that message
+  // alone. Name the binary, its mtime, and the remedy so the failure is
+  // actionable on first read.
+  let report;
+  try {
+    report = JSON.parse(r.stdout);
+  } catch (err) {
+    throw new Error(keyParityDiagnostic(bin, r, err));
+  }
+  // Cheap version check (no extra process spawn): a binary old enough to
+  // predate the `--json` key field can still exit 0 with parseable JSON
+  // that simply lacks `key` — catch that shape mismatch here too, rather
+  // than letting it surface as an opaque assert.equal(undefined, ...).
+  if (!report || typeof report.key !== "string") {
+    throw new Error(
+      keyParityDiagnostic(
+        bin,
+        r,
+        new Error("parsed JSON has no string 'key' field — binary may predate this schema"),
+      ),
+    );
+  }
+
   assert.equal(
     client.keyFor(client.projectRootFor(proj)),
     report.key,
     "JS and Go must agree on the runtime key for the same project root",
   );
 });
+
+// keyParityDiagnostic builds the actionable failure message for the
+// key-parity test above: which binary ran, how stale it is, what it
+// actually printed, and the one-line remedy (INV-126).
+function keyParityDiagnostic(bin, r, err) {
+  const mtime = (() => {
+    try {
+      return fs.statSync(bin).mtime.toISOString();
+    } catch {
+      return "unknown (stat failed)";
+    }
+  })();
+  return (
+    `key-parity: could not use JSON from '${bin} resident status --json'.\n` +
+    `  binary: ${bin}\n` +
+    `  binary mtime: ${mtime}\n` +
+    `  exit code: ${r.status}, signal: ${r.signal}\n` +
+    `  stdout: ${JSON.stringify(r.stdout)}\n` +
+    `  stderr: ${JSON.stringify(r.stderr)}\n` +
+    `  cause: ${err.message}\n` +
+    `  remedy: rebuild the binary — 'go build ./cmd/tkr' — and re-run.`
+  );
+}

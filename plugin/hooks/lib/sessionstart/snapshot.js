@@ -4,10 +4,12 @@
 // Windows). 10MB maxBuffer cap. Empty string on any error.
 
 const { spawnSync } = require("child_process");
+const { tkrSpawnArgv } = require("../tkr-bin");
 
 function loadSnapshotXML(sid) {
   try {
-    const res = spawnSync("tkr", ["session", "load-snapshot", sid], {
+    const { cmd, argv } = tkrSpawnArgv(["session", "load-snapshot", sid]);
+    const res = spawnSync(cmd, argv, {
       encoding: "utf8",
       timeout: 3000,
       killSignal: "SIGKILL",

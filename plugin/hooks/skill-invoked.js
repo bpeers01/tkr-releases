@@ -73,7 +73,24 @@ const skillBundle = require("./lib/skill-bundle");
 // absence on a v2-or-earlier row means the writer predated the concept
 // and cannot be read as "no bundle". Same additive discipline as the
 // task-spawns veto fields.
-const SCHEMA_VERSION = 3;
+// v3 -> v4: adds `bundle_bytes`, the raw on-disk tree size (#218). The
+// tokens field is bytes/4 — biased low ~45% for this content class — so
+// the ledger persists the byte count the estimate was derived from,
+// making rows re-derivable under any future divisor. Absence on a v4 row
+// means the bundle came from a pre-v2 measurement cache; absence earlier
+// means the writer predated the field.
+// v4 -> v5: adds `bundle_dir_version` + `bundle_cross_version` (#219).
+// Several CLI bundled-skill versions coexist under the same temp root;
+// resolveBundleDir now prefers the highest-semver version that has a
+// non-empty tree for the skill, falling back to older ones. When the
+// resolved version is not the newest version directory present on disk,
+// the measurement is from a stale tree and `bundle_cross_version` is
+// true — the gate text carries the same flag so a human reading a
+// prompt knows the number is a lower bound, not a current reading.
+// Absent on a v5 row only when the skill has no bundle at all (same
+// all-or-nothing rule as the other bundle_* fields); absent on an
+// earlier row means the writer predated the concept.
+const SCHEMA_VERSION = 5;
 
 function skillAuditDisabled() {
   return process.env.TKR_SKILL_AUDIT_DISABLED === "1";
@@ -114,9 +131,16 @@ function buildRow(input, gateInfo) {
   // was never measured.
   if (gateInfo && gateInfo.bundle) {
     row.bundle_tokens = gateInfo.bundle.tokens;
+    if (typeof gateInfo.bundle.bytes === "number") {
+      row.bundle_bytes = gateInfo.bundle.bytes;
+    }
     row.bundle_files = gateInfo.bundle.files;
     row.gate_mode = gateInfo.mode;
     row.gate_action = gateInfo.action;
+    if (gateInfo.bundle.version) {
+      row.bundle_dir_version = gateInfo.bundle.version;
+      row.bundle_cross_version = Boolean(gateInfo.bundle.crossVersion);
+    }
   }
   return row;
 }

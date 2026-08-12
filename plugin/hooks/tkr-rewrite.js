@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// tkr-hook-version: 5
+// tkr-hook-version: 6
 // tkr Claude Code hook — rewrites Bash commands to use tkr for token savings.
 //
 // This Node dispatcher is the primary Claude hook path. It avoids shell-specific
@@ -16,6 +16,7 @@ const { stateDir } = require("./lib/state-dir");
 const { recordRewriteMiss } = require("./lib/rewrite-miss");
 const { tkrSpawnArgv } = require("./lib/tkr-bin");
 const resident = require("./lib/resident-client");
+const { injectSessionID } = require("./lib/session-id-inject");
 
 const TKR_STATE_DIR = stateDir();
 const TIMINGS_FILE = path.join(TKR_STATE_DIR, "hook-timings.jsonl");
@@ -361,6 +362,18 @@ async function onStdinEnd() {
     rewritten = served.body.toString("utf8");
   } else {
     TIMING_SOURCE = "spawn";
+    // INV-119: REWRITE_SPAWN.cmd is null when resolveTkrBin found nothing
+    // to spawn at all (no TKR_BIN, no install location, no PATH match) —
+    // the same "no tkr" outcome ENOENT used to report once a bare name
+    // reached the OS. Short-circuit rather than let execFileSync throw a
+    // "cmd must be a string" TypeError that would fall into the generic
+    // "rewrite-error" branch below and mislabel a resolution failure as a
+    // spawn-time error.
+    if (!REWRITE_SPAWN.cmd) {
+      TIMING_NOTE = "no-tkr";
+      finish();
+      return;
+    }
     try {
       rewritten = execFileSync(REWRITE_SPAWN.cmd, REWRITE_SPAWN.argv.concat([cmd]), {
         encoding: "utf8",
@@ -453,6 +466,16 @@ async function onStdinEnd() {
       TIMING_NOTE = `rewrite-err-${exitCode}`;
       finish();
       return;
+  }
+
+  // INV-121: attach the real session id (already extracted above for the
+  // circuit breaker) to the rewritten command so the spawned tkr process
+  // can key delta snapshots on it instead of falling back to pid-<ppid>.
+  // "default" means every id source missed — nothing real to attach, and
+  // the SAFE_SID check inside injectSessionID would otherwise happily
+  // stamp the literal word "default" onto the command.
+  if (sid !== "default") {
+    rewritten = injectSessionID(rewritten, sid);
   }
 
   const updatedInput = {

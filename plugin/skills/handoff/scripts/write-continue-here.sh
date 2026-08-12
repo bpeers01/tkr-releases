@@ -215,6 +215,40 @@ if [ "$SOURCE" = "keepalive" ] && [ -n "$SESSION_ID" ]; then
   fi
 fi
 
+# Resolve the handoffs directory (#262): a plain cwd-relative
+# `.tkr/handoffs` lands in the WORKTREE's own tree when this runs inside
+# a git worktree, invisible to /continue running from the main checkout.
+# Priority: TKR_HANDOFFS_DIR override (checked first, wins over
+# everything) > main-checkout root, derived from `git rev-parse
+# --git-common-dir` (its parent is the main worktree root —
+# `--show-toplevel` is wrong here, it returns the worktree itself) >
+# today's cwd-relative fallback when git resolution is unavailable or
+# fails for any reason. The read side (hooks/lib/sessionstart/continue.js
+# `handoffsDir`, skills/handoff/scripts/prune.sh) must resolve
+# identically or the two drift again.
+resolve_handoffs_dir() {
+  if [ -n "${TKR_HANDOFFS_DIR:-}" ]; then
+    printf '%s\n' "$TKR_HANDOFFS_DIR"
+    return
+  fi
+  # Scrub ambient GIT_* before asking git anything: this runs inside hooks,
+  # and git exports GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE into every hook it
+  # runs. Git prefers those over the current directory, so an un-scrubbed
+  # call would resolve against whatever repo the environment points at
+  # rather than this one.
+  _common_dir="$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
+    -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY GIT_TERMINAL_PROMPT=0 \
+    git rev-parse --git-common-dir 2>/dev/null || true)"
+  if [ -n "$_common_dir" ]; then
+    _common_dir="$(cd "$_common_dir" 2>/dev/null && pwd || true)"
+  fi
+  if [ -n "$_common_dir" ]; then
+    printf '%s\n' "$(dirname "$_common_dir")/.tkr/handoffs"
+    return
+  fi
+  printf '%s\n' ".tkr/handoffs"
+}
+
 # Resolve default target when unset.
 if [ -z "$TARGET" ]; then
   IDENT="$NAME_OVERRIDE"
@@ -223,7 +257,8 @@ if [ -z "$TARGET" ]; then
   fi
   [ -z "$IDENT" ] && IDENT="unknown-sid"
   STAMP="$(date -u +"%Y%m%d-%H%M")"
-  TARGET=".tkr/handoffs/${IDENT}-${STAMP}.md"
+  HANDOFFS_DIR="$(resolve_handoffs_dir)"
+  TARGET="$HANDOFFS_DIR/${IDENT}-${STAMP}.md"
 fi
 
 if [ -n "${TKR_HANDOFF_NO_EMIT:-}" ] && [ "${TKR_HANDOFF_NO_EMIT}" = "1" ]; then
@@ -410,6 +445,8 @@ print_result() {
   echo "wrote $TARGET"
   case "$TARGET" in
     .tkr/handoffs/*) echo "resume: /tkr:continue $TARGET" ;;
+    "${HANDOFFS_DIR:-.tkr/handoffs}"/*)
+      echo "resume: /tkr:continue .tkr/handoffs/$(basename "$TARGET")" ;;
   esac
 }
 

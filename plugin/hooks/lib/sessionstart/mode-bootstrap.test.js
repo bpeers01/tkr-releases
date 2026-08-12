@@ -121,6 +121,7 @@ test("sweep on missing dir is a no-op", () => {
 
 test("AT-PLAN33-8: spawnModeAuto invokes spawnBoundedFn with sid env", () => {
   const { spawnModeAuto } = loadFresh();
+  const { resolveTkrBin } = require("../tkr-bin");
   let captured = null;
   const fakeChild = { on: () => {}, unref: () => {} };
   const fakeSpawn = (cmd, argv, opts /*, timeout*/) => {
@@ -129,10 +130,42 @@ test("AT-PLAN33-8: spawnModeAuto invokes spawnBoundedFn with sid env", () => {
   };
   const ok = spawnModeAuto("session-xyz", fakeSpawn);
   assert.strictEqual(ok, true);
-  assert.strictEqual(captured.cmd, "tkr");
+  // HOOK-004: spawnModeAuto now resolves the binary through lib/tkr-bin.js
+  // (TKR_BIN → standard install location → bare "tkr") rather than
+  // hardcoding the bare name, so the expected cmd tracks the resolver
+  // rather than a literal — this machine has a real install at
+  // ~/.local/bin/tkr.exe, which the old hardcoded "tkr" assertion missed
+  // entirely (it would have silently no-op'd off-PATH).
+  assert.strictEqual(captured.cmd, resolveTkrBin(captured.opts.env));
   assert.deepStrictEqual(captured.argv, ["mode", "auto"]);
   assert.strictEqual(captured.opts.detached, true);
   assert.strictEqual(captured.opts.env.TKR_SESSION_ID, "session-xyz");
+});
+
+test("HOOK-004: spawnModeAuto honors TKR_BIN override", () => {
+  // resolveTkrBin only trusts an explicit TKR_BIN when the path actually
+  // exists (or is the literal "tkr") — see hooks/lib/tkr-bin.js — so the
+  // shim must be a real file, not just a string.
+  const tmp = mkTmp();
+  const shim = path.join(tmp, "tkr-shim.exe");
+  fs.writeFileSync(shim, "");
+  const { spawnModeAuto } = loadFresh();
+  const prev = process.env.TKR_BIN;
+  process.env.TKR_BIN = shim;
+  try {
+    let captured = null;
+    const fakeChild = { on: () => {}, unref: () => {} };
+    const fakeSpawn = (cmd, argv, opts) => {
+      captured = { cmd, argv, opts };
+      return fakeChild;
+    };
+    spawnModeAuto("session-abc", fakeSpawn);
+    assert.strictEqual(captured.cmd, shim);
+  } finally {
+    if (prev === undefined) delete process.env.TKR_BIN;
+    else process.env.TKR_BIN = prev;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test("spawnModeAuto returns false on empty sid (manual CLI / hookless)", () => {

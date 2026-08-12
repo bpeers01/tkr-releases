@@ -10,6 +10,7 @@
 //   keepalive prune-state` had no automatic caller). 10s hard kill.
 
 const { spawnBounded } = require("../spawn-bounded");
+const { tkrSpawnArgv } = require("../tkr-bin");
 
 function spawnCleanupOld(projectPath) {
   try {
@@ -17,7 +18,8 @@ function spawnCleanupOld(projectPath) {
     if (projectPath) {
       args.push("--project", projectPath);
     }
-    const child = spawnBounded("tkr", args, {
+    const { cmd, argv } = tkrSpawnArgv(args);
+    const child = spawnBounded(cmd, argv, {
       detached: true,
       stdio: "ignore",
       windowsHide: true,
@@ -33,7 +35,8 @@ function spawnCleanupOld(projectPath) {
 function spawnCaptureRules(sid, projectPath) {
   try {
     const args = ["session", "capture-rules", "--session-id", sid, "--project", projectPath];
-    const child = spawnBounded("tkr", args, {
+    const { cmd, argv } = tkrSpawnArgv(args);
+    const child = spawnBounded(cmd, argv, {
       detached: true,
       stdio: "ignore",
       windowsHide: true,
@@ -56,7 +59,8 @@ function spawnCaptureRules(sid, projectPath) {
 // create keepalive activity.
 function spawnKeepalivePrune() {
   try {
-    const child = spawnBounded("tkr", ["keepalive", "prune-state"], {
+    const { cmd, argv } = tkrSpawnArgv(["keepalive", "prune-state"]);
+    const child = spawnBounded(cmd, argv, {
       detached: true,
       stdio: "ignore",
       windowsHide: true,
