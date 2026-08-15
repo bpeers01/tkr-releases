@@ -9,7 +9,32 @@ It works on four fronts at once: compresses bloated tool output before Claude re
 
 Built for Claude Code on **Pro, Max, or Team**. API users get the same wins paid in dollars instead of cap headroom (`tkr gain --economics`). Binaries ship every release for macOS, Linux, and Windows; automated release-validation smoke testing currently covers Linux and Windows only (see Requirements). Single static binary, zero runtime dependencies.
 
-> **What's new in v5.21.0** — This is the release where tkr stops
+> **What's new in v5.22.0** — This release closes a set of blind spots
+> where tkr's own numbers under-reported what actually happened, plus a
+> pricing correction and a batch of Windows and workflow fixes.
+> If you use the Workflow tool to fan out multiple agents, that spend
+> and its savings were both invisible: `tkr gain --fan-out` reported
+> zero rows for a Workflow-tool fan-out, and `tkr usage` never counted
+> that spend toward your totals or cap tracking. Both now see it.
+> Skills invoked by typing a slash command (rather than picked by
+> Claude) were never recorded as invoked at all — that tracking now
+> fires at the right point in the pipeline.
+> Sonnet 5 is confirmed to stay priced at $2 per million input tokens /
+> $10 per million output tokens permanently — an earlier scheduled
+> increase to $3/$15 will not happen, and tkr no longer prices your
+> savings against the rate that was never going to apply.
+> On Windows, hooks no longer flash a console window on every spawn — a
+> cosmetic-looking bug that could actually break skill detection by
+> starving a background lookup of focus.
+> The weekly-pace bar in `tkr top` no longer hides a real early-window
+> overrun behind a rounding coincidence — a small but genuine overspend
+> on day one could previously render as a flat, on-pace bar.
+> The live sessions dashboard (`/live`) gains click-to-sort and filter
+> columns, per-model color coding shared across its table and charts,
+> and a new chart plotting turns against context usage per session.
+> [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
+>
+> **v5.21.0** — This is the release where tkr stops
 > overstating its own numbers. A tool that exists to measure savings has
 > one failure worse than crashing: claiming a saving it didn't deliver.
 > Six of those are fixed here, and most of them move tkr's reported
@@ -282,10 +307,10 @@ Claude Code, Gemini CLI, and Cursor rewrite commands automatically — no manual
 
 ```bash
 # macOS / Linux / Git Bash
-TKR_VERSION=v5.21.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
+TKR_VERSION=v5.22.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.21.0
+irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.22.0
 ```
 
 #### Manual download
@@ -642,7 +667,7 @@ When installed as a plugin, tkr registers 9 core on-demand skills invocable with
 ## Verify Installation
 
 ```bash
-tkr --version             # expected: tkr v5.21.0 (or newer)
+tkr --version             # expected: tkr v5.22.0 (or newer)
 tkr doctor                # health check — PASS/WARN/FAIL rows; exit 0 or 2
 tkr verify                # run built-in filter tests (341 should pass)
 ```
