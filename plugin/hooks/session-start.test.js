@@ -395,6 +395,10 @@ test("[continue] fires file_fresh path when handoff mtime < 24h", () => {
     res.stdout.includes("fresh handoff"),
     `expected fresh-handoff wording:\n${res.stdout}`,
   );
+  assert.ok(
+    !res.stdout.includes("/rehydrate"),
+    `fresh handoff must stay lean — no tier-2 clause on the common path:\n${res.stdout}`,
+  );
   const l0r = ledgerLines.map((l) => JSON.parse(l)).filter((e) => e.layer === "L0R");
   assert.strictEqual(l0r.length, 1);
   assert.strictEqual(l0r[0].trigger_state.path, "v2_fresh");
@@ -408,6 +412,10 @@ test("[continue] fires v2_stale path when handoff mtime 24h-3d", () => {
   assert.ok(
     res.stdout.includes("d old"),
     `expected stale-handoff wording (N d old):\n${res.stdout}`,
+  );
+  assert.ok(
+    res.stdout.includes("/rehydrate"),
+    `stale handoff should name the tier-2 fallback:\n${res.stdout}`,
   );
   const l0r = ledgerLines.map((l) => JSON.parse(l)).filter((e) => e.layer === "L0R");
   assert.strictEqual(l0r.length, 1);
@@ -1064,5 +1072,74 @@ test("HAND-008: every other path keeps bare-text stdout", () => {
       () => JSON.parse(out),
       `${label}: must stay bare text, not JSON`,
     );
+  }
+});
+
+// #263 follow-up e2e — session-start.js wires refreshSkillManifestIfStale
+// into the startup path. With no skill-manifest.json in TKR_STATE_DIR the
+// manifest is stale, so a detached rescrape must fire. The real assertion
+// is about the WIRING, not the scrape itself: the hook must still return
+// promptly (spawnSync's default timeout would fail the test otherwise) and
+// emit normal guidance, proving the fire-and-forget spawn never blocks the
+// synchronous stdout write. TKR_CC_BINARY points at a nonexistent path so
+// the spawned child (if it runs long enough to matter) fails fast instead
+// of scraping the real installed binary as a side effect of this test.
+test("#263: stale/missing skill-manifest.json on startup does not block hook output", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-ss-manifest-"));
+  try {
+    const env = {
+      ...process.env,
+      TKR_STATE_DIR: tmp,
+      CLAUDE_PROJECT_DIR: tmp,
+      TKR_CC_BINARY: path.join(tmp, "nonexistent-binary"),
+    };
+    delete env.TKR_SYSPROMPT;
+    const res = spawnSync(process.execPath, [HOOK], {
+      input: JSON.stringify({ source: "startup", session_id: "manifest-refresh-e2e" }),
+      env,
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.strictEqual(res.status, 0, `exit ${res.status}: ${res.stderr}`);
+    assert.ok(!res.signal, `hook was killed by signal ${res.signal} — spawn likely blocked it`);
+    assert.ok(res.stdout.length > 0, "hook must still emit guidance");
+  } finally {
+    safeRmSync(tmp);
+  }
+});
+
+test("#263: fresh skill-manifest.json on startup does not spawn a rescrape", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-ss-manifest-fresh-"));
+  try {
+    const binPath = path.join(tmp, "fake-binary");
+    fs.writeFileSync(binPath, Buffer.alloc(16));
+    const st = fs.statSync(binPath);
+    fs.writeFileSync(
+      path.join(tmp, "skill-manifest.json"),
+      JSON.stringify({
+        schema: 1,
+        binaryPath: binPath,
+        binarySize: st.size,
+        binaryMtimeMs: Math.floor(st.mtimeMs),
+        complete: true,
+        skills: [],
+      }),
+    );
+    const env = {
+      ...process.env,
+      TKR_STATE_DIR: tmp,
+      CLAUDE_PROJECT_DIR: tmp,
+    };
+    delete env.TKR_SYSPROMPT;
+    const res = spawnSync(process.execPath, [HOOK], {
+      input: JSON.stringify({ source: "startup", session_id: "manifest-refresh-e2e-fresh" }),
+      env,
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.strictEqual(res.status, 0, `exit ${res.status}: ${res.stderr}`);
+    assert.ok(res.stdout.length > 0, "hook must still emit guidance");
+  } finally {
+    safeRmSync(tmp);
   }
 });

@@ -66,11 +66,11 @@ function runHook(payload, opts = {}) {
 
 // ---- exported constants ----
 
-test("TURNS_WARN is 50, TURNS_HARD is 80, CAP_WARN_PCT is 70", () => {
+test("TURNS_WARN is 75, TURNS_HARD is 150, CAP_WARN_PCT is 70", () => {
   withTempDir((dir) => {
     const m = freshModule(dir);
-    assert.strictEqual(m.TURNS_WARN, 50);
-    assert.strictEqual(m.TURNS_HARD, 80);
+    assert.strictEqual(m.TURNS_WARN, 75);
+    assert.strictEqual(m.TURNS_HARD, 150);
     assert.strictEqual(m.CAP_WARN_PCT, 70);
   });
 });
@@ -92,13 +92,13 @@ test("no nudge below turn and cap thresholds (default TTL)", () => {
 
 test("nudge fires when turn_count >= TURNS_WARN (default TTL=300)", () => {
   withTempDir((dir) => {
-    const telPath = mkTelemetryFile({ turn_count: 50, seven_day_pct: 10 }, dir);
+    const telPath = mkTelemetryFile({ turn_count: 80, seven_day_pct: 10 }, dir);
     process.env.TKR_STATUSLINE_PATH = telPath;
     process.env.TKR_CACHE_TTL_SECONDS = "300";
     const m = freshModule(dir);
     const result = m.compactionNudge("sid-long");
-    assert.ok(result, "should nudge at turn 50 with 5min TTL");
-    assert.ok(result.includes("long") || result.includes("50"), "should mention session length");
+    assert.ok(result, "should nudge at turn 80 with 5min TTL");
+    assert.ok(result.includes("long") || result.includes("80"), "should mention session length");
     delete process.env.TKR_STATUSLINE_PATH;
     delete process.env.TKR_CACHE_TTL_SECONDS;
   });
@@ -118,7 +118,7 @@ test("nudge fires when seven_day_pct >= CAP_WARN_PCT", () => {
 
 test("second /compact bypasses nudge (bypass flag mechanism)", () => {
   withTempDir((dir) => {
-    const telPath = mkTelemetryFile({ turn_count: 60, seven_day_pct: 10 }, dir);
+    const telPath = mkTelemetryFile({ turn_count: 80, seven_day_pct: 10 }, dir);
     process.env.TKR_STATUSLINE_PATH = telPath;
     process.env.TKR_CACHE_TTL_SECONDS = "300";
     const m = freshModule(dir);
@@ -134,29 +134,29 @@ test("second /compact bypasses nudge (bypass flag mechanism)", () => {
 
 // ---- PLAN-1 T6: TTL-aware TURNS_WARN doubling ----
 
-test("TTL=1h direct: turn_count=60 → no nudge (60 < 100 doubled threshold)", () => {
-  // With 1h cache: TURNS_WARN doubles from 50 → 100. Turn 60 is below.
+test("TTL=1h direct: turn_count=100 → no nudge (100 < 150 doubled threshold)", () => {
+  // With 1h cache: TURNS_WARN doubles from 75 → 150. Turn 100 is below.
   withTempDir((dir) => {
-    const telPath = mkTelemetryFile({ turn_count: 60, seven_day_pct: 10 }, dir);
+    const telPath = mkTelemetryFile({ turn_count: 100, seven_day_pct: 10 }, dir);
     process.env.TKR_STATUSLINE_PATH = telPath;
     process.env.TKR_CACHE_TTL_SECONDS = "3600"; // config source → ttlActive1h = true
     const m = freshModule(dir);
-    const result = m.compactionNudge("sid-1h-60");
-    assert.strictEqual(result, null, "turn 60 should NOT nudge when 1h cache raises gate to 100");
+    const result = m.compactionNudge("sid-1h-100");
+    assert.strictEqual(result, null, "turn 100 should NOT nudge when 1h cache raises gate to 150");
     delete process.env.TKR_STATUSLINE_PATH;
     delete process.env.TKR_CACHE_TTL_SECONDS;
   });
 });
 
-test("TTL=1h direct: turn_count=100 → nudge fires (equals doubled threshold)", () => {
-  // Doubled gate: 100 >= 100 → longSession = true → nudge.
+test("TTL=1h direct: turn_count=150 → nudge fires (equals doubled threshold)", () => {
+  // Doubled gate: 150 >= 150 → longSession = true → nudge.
   withTempDir((dir) => {
-    const telPath = mkTelemetryFile({ turn_count: 100, seven_day_pct: 10 }, dir);
+    const telPath = mkTelemetryFile({ turn_count: 150, seven_day_pct: 10 }, dir);
     process.env.TKR_STATUSLINE_PATH = telPath;
     process.env.TKR_CACHE_TTL_SECONDS = "3600";
     const m = freshModule(dir);
-    const result = m.compactionNudge("sid-1h-100");
-    assert.ok(result, "turn 100 should nudge at doubled threshold");
+    const result = m.compactionNudge("sid-1h-150");
+    assert.ok(result, "turn 150 should nudge at doubled threshold");
     delete process.env.TKR_STATUSLINE_PATH;
     delete process.env.TKR_CACHE_TTL_SECONDS;
   });
@@ -176,15 +176,15 @@ test("TTL=1h: cap pressure (seven_day_pct >= 70) still fires regardless of turn 
   });
 });
 
-test("TTL detection disabled: preserves original 50-turn threshold", () => {
-  // source="default" with ttl_seconds=300 → ttlActive1h = false → TURNS_WARN=50.
+test("TTL detection disabled: preserves original 75-turn threshold", () => {
+  // source="default" with ttl_seconds=300 → ttlActive1h = false → TURNS_WARN=75.
   withTempDir((dir) => {
-    const telPath = mkTelemetryFile({ turn_count: 50, seven_day_pct: 10 }, dir);
+    const telPath = mkTelemetryFile({ turn_count: 75, seven_day_pct: 10 }, dir);
     process.env.TKR_STATUSLINE_PATH = telPath;
     process.env.TKR_TTL_DETECTION_DISABLED = "1";
     const m = freshModule(dir);
-    const result = m.compactionNudge("sid-dis-50");
-    assert.ok(result, "TTL detection disabled → legacy 50-turn gate → nudge at turn 50");
+    const result = m.compactionNudge("sid-dis-75");
+    assert.ok(result, "TTL detection disabled → legacy 75-turn gate → nudge at turn 75");
     delete process.env.TKR_STATUSLINE_PATH;
     delete process.env.TKR_TTL_DETECTION_DISABLED;
   });
@@ -202,11 +202,11 @@ test("hook outputs {} when no nudge needed", () => {
   assert.ok(!out.decision, "should not block when thresholds not met");
 });
 
-test("hook outputs block decision when turn_count >= 50 (default TTL)", () => {
+test("hook outputs block decision when turn_count >= 75 (default TTL)", () => {
   const { res } = runHook(
     { session_id: "sid-e2e-block" },
     {
-      telemetry: { turn_count: 55, seven_day_pct: 10 },
+      telemetry: { turn_count: 80, seven_day_pct: 10 },
       env: { TKR_CACHE_TTL_SECONDS: "300" },
     },
   );
@@ -216,15 +216,15 @@ test("hook outputs block decision when turn_count >= 50 (default TTL)", () => {
   assert.ok(out.reason && out.reason.includes("compact"), "reason should mention compact");
 });
 
-test("hook: TTL=1h suppresses nudge at turn_count=55 (below doubled 100-turn gate)", () => {
+test("hook: TTL=1h suppresses nudge at turn_count=100 (below doubled 150-turn gate)", () => {
   const { res } = runHook(
     { session_id: "sid-e2e-1h" },
     {
-      telemetry: { turn_count: 55, seven_day_pct: 10 },
+      telemetry: { turn_count: 100, seven_day_pct: 10 },
       env: { TKR_CACHE_TTL_SECONDS: "3600" },
     },
   );
   assert.strictEqual(res.status, 0);
   const out = JSON.parse(res.stdout);
-  assert.ok(!out.decision, "TTL=1h should suppress nudge at turn 55");
+  assert.ok(!out.decision, "TTL=1h should suppress nudge at turn 100");
 });

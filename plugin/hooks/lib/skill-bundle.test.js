@@ -410,3 +410,165 @@ test("bundleFor re-measures when the cached directory has gone (CLI upgrade)", (
     else process.env.TKR_STATE_DIR = prev;
   }
 });
+
+// ---------------------------------------------------------------------
+// #263 — manifest consult: first-invocation gating from the binary scrape
+// ---------------------------------------------------------------------
+
+function withState(state, fn) {
+  const prev = process.env.TKR_STATE_DIR;
+  process.env.TKR_STATE_DIR = state;
+  try {
+    return fn();
+  } finally {
+    if (prev === undefined) delete process.env.TKR_STATE_DIR;
+    else process.env.TKR_STATE_DIR = prev;
+  }
+}
+
+// A state dir holding a scraped manifest plus the fake CLI binary it
+// describes, so the size+mtime freshness check has something real to stat.
+function manifestFixture(mutate) {
+  const state = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-state-"));
+  const bin = path.join(state, "claude.exe");
+  fs.writeFileSync(bin, "b".repeat(4096));
+  const st = fs.statSync(bin);
+  const manifest = {
+    schema: 1,
+    ccVersion: "2.1.227",
+    binaryPath: bin,
+    binarySize: st.size,
+    binaryMtimeMs: Math.floor(st.mtimeMs),
+    scrapedAt: "2026-08-11T00:00:00.000Z",
+    complete: true,
+    skills: [
+      { name: "claude-api", hasTree: true, approxBytes: 867776, userInvocable: true },
+      { name: "run", hasTree: false, approxBytes: null, userInvocable: true },
+      { name: "tkr:search", hasTree: true, approxBytes: 999999, userInvocable: true },
+    ],
+  };
+  if (mutate) mutate(manifest);
+  fs.writeFileSync(path.join(state, "skill-manifest.json"), JSON.stringify(manifest));
+  const emptyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-sb-"));
+  return { state, bin, manifest, emptyRoot };
+}
+
+test("manifestEntryFor returns the scraped row for a listed colon-less skill", () => {
+  const { state, emptyRoot } = manifestFixture();
+  withState(state, () => {
+    const e = sb.manifestEntryFor("claude-api", { root: emptyRoot });
+    assert.deepEqual(e, { name: "claude-api", hasTree: true, approxBytes: 867776, userInvocable: true });
+    // Pure lookup: a SKILL.md-only row comes back too — hasTree/threshold
+    // policy belongs to the gate wiring, not the reader.
+    assert.equal(sb.manifestEntryFor("run", { root: emptyRoot }).hasTree, false);
+  });
+});
+
+test("manifestEntryFor: a namespaced name is null even when a row claims otherwise", () => {
+  const { state, emptyRoot } = manifestFixture();
+  withState(state, () => {
+    assert.equal(sb.manifestEntryFor("tkr:search", { root: emptyRoot }), null);
+  });
+});
+
+test("manifestEntryFor: absent, corrupt, or wrong-schema manifest all mean null", () => {
+  const emptyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-sb-"));
+  const bare = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-state-"));
+  withState(bare, () => {
+    assert.equal(sb.manifestEntryFor("claude-api", { root: emptyRoot }), null);
+  });
+  const corrupt = manifestFixture();
+  fs.writeFileSync(path.join(corrupt.state, "skill-manifest.json"), "{not json");
+  withState(corrupt.state, () => {
+    assert.equal(sb.manifestEntryFor("claude-api", { root: emptyRoot }), null);
+  });
+  const wrong = manifestFixture((m) => {
+    m.schema = 99;
+  });
+  withState(wrong.state, () => {
+    assert.equal(sb.manifestEntryFor("claude-api", { root: emptyRoot }), null);
+  });
+});
+
+test("manifestEntryFor: complete:false degrades to no opinion (#263 fail-open)", () => {
+  const { state, emptyRoot } = manifestFixture((m) => {
+    m.complete = false;
+  });
+  withState(state, () => {
+    assert.equal(sb.manifestEntryFor("claude-api", { root: emptyRoot }), null);
+  });
+});
+
+test("manifestEntryFor: an unlisted skill is null", () => {
+  const { state, emptyRoot } = manifestFixture();
+  withState(state, () => {
+    assert.equal(sb.manifestEntryFor("verify", { root: emptyRoot }), null);
+  });
+});
+
+test("manifestEntryFor: a binary that changed since the scrape is stale — null", () => {
+  // Size change (in-place CLI upgrade).
+  const a = manifestFixture();
+  fs.writeFileSync(a.bin, "b".repeat(9999));
+  withState(a.state, () => {
+    assert.equal(sb.manifestEntryFor("claude-api", { root: a.emptyRoot }), null);
+  });
+  // Mtime-only change (same size, reinstalled).
+  const b = manifestFixture();
+  fs.utimesSync(b.bin, new Date(12_345_000), new Date(12_345_000));
+  withState(b.state, () => {
+    assert.equal(sb.manifestEntryFor("claude-api", { root: b.emptyRoot }), null);
+  });
+});
+
+test("manifestEntryFor: an unverifiable binary path is null, never a guess", () => {
+  const { state, bin, emptyRoot } = manifestFixture();
+  fs.rmSync(bin);
+  withState(state, () => {
+    assert.equal(sb.manifestEntryFor("claude-api", { root: emptyRoot }), null);
+  });
+});
+
+test("manifestEntryFor: an extracted version dir newer than ccVersion means stale — null", () => {
+  const { state } = manifestFixture();
+  const newer = fixture();
+  newer.mk("2.1.228", "h", "whatever", [["a.md", 40]]);
+  withState(state, () => {
+    assert.equal(sb.manifestEntryFor("claude-api", { root: newer.root }), null);
+  });
+  // The manifest's own version present on disk is not "newer" — still fresh.
+  const same = fixture();
+  same.mk("2.1.227", "h", "whatever", [["a.md", 40]]);
+  withState(state, () => {
+    assert.ok(sb.manifestEntryFor("claude-api", { root: same.root }));
+  });
+});
+
+test("buildFirstInvocationAskReason quotes the scraped estimate as a range with the escape hatch", () => {
+  const text = sb.buildFirstInvocationAskReason("claude-api", {
+    name: "claude-api",
+    hasTree: true,
+    approxBytes: 867776,
+    userInvocable: true,
+  });
+  // 867,776 scraped bytes: bytes/4 low end, bytes/2.75 high end — never a point.
+  assert.match(text, /217K/);
+  assert.match(text, /316K/);
+  assert.match(text, /first invocation/i);
+  assert.match(text, /scraped|manifest/i);
+  assert.match(text, /\/claude-api/);
+  assert.match(text, /TKR_SKILL_GATE/);
+});
+
+test("buildFirstInvocationWarning keeps the range discipline and both directions to change it", () => {
+  const text = sb.buildFirstInvocationWarning(
+    "claude-api",
+    { name: "claude-api", hasTree: true, approxBytes: 867776, userInvocable: true },
+    25_000
+  );
+  assert.match(text, /217K/);
+  assert.match(text, /316K/);
+  assert.match(text, /first invocation/i);
+  assert.match(text, /TKR_SKILL_GATE=ask/);
+  assert.match(text, /\/claude-api/);
+});

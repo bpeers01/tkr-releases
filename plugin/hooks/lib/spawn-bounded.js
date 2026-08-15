@@ -60,7 +60,11 @@ function spawnBounded(cmd, args, opts, timeoutMs) {
   const t = (typeof timeoutMs === "number" && timeoutMs > 0) ? timeoutMs : 5_000;
   let child;
   try {
-    child = spawn(cmd, args || [], opts || {});
+    // windowsHide defaults on: hooks spawn from a console-less parent, so
+    // Windows would allocate a NEW visible console per call and steal
+    // focus. Defaulted here rather than at each call site because this
+    // helper is the shared path — a caller may still override it.
+    child = spawn(cmd, args || [], { windowsHide: true, ...(opts || {}) });
   } catch {
     return null;
   }

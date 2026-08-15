@@ -27,9 +27,10 @@
 // while the evidence survives — and the ledger is supposed to be the
 // thing that outlives it.
 //
-// UserPromptSubmit already holds the raw prompt. A prompt beginning
-// with `/` IS the signal, no transcript involved, and recording it costs
-// one small write on the rare turns where it happens.
+// UserPromptSubmit already holds the raw prompt. A prompt carrying
+// Claude Code's `<command-name>` scaffold (see parseCommandTag) IS the
+// signal, no transcript involved, and recording it costs one small write
+// on the rare turns where it happens.
 //
 // ── Scoping ──────────────────────────────────────────────────────────
 //
@@ -37,6 +38,27 @@
 // two turns later must not read a stale marker and call itself manual,
 // so the reader requires the prompt id to match and applies a short TTL
 // as a backstop for when Claude Code supplies no id.
+//
+// ── #278: the marker's reader structurally never runs for this case ──
+//
+// The design above assumes SOMETHING later reads the marker and joins it
+// against a Skill-tool dispatch — that "something" is
+// resolveInvocationSource(), called from hooks/skill-invoked.js's
+// PreToolUse(Skill) handler. #205's live dogfood established that a
+// typed slash command that resolves to a skill never dispatches the
+// Skill tool at all: Claude Code resolves it natively, so PreToolUse
+// never fires and skill-invoked.js never runs. The marker gets written
+// correctly and nothing ever reads it — 150 marker files, 0 manual rows.
+//
+// The marker mechanism and resolveInvocationSource() stay as written:
+// they remain correct for the case they were built for (attributing a
+// Skill-tool dispatch that DOES fire on the same turn, e.g. a future or
+// alternate CC path per docs/spikes/skill-tool-pretooluse-findings.md's
+// fallback-path note). But they cannot be the ONLY path, since the
+// common case never reaches them. hooks/user-prompt-submit.js now also
+// writes the skill-invoked ledger row directly, right here on the turn
+// where the tag is observed, instead of leaving it for a reader that
+// will never come. See recordManualSkillInvocation() there.
 
 const fs = require("fs");
 const path = require("path");
@@ -52,26 +74,53 @@ const MARKER_TTL_MS = 60 * 1000;
 // skills can carry a `plugin:skill` form, so ":" is allowed.
 const SLASH_RE = /^\/([a-zA-Z0-9_:-]{1,64})\b/;
 
+// COMMAND_TAG_RE matches Claude Code's expanded turn scaffold for a
+// slash-command invocation: `<command-name>/name</command-name>`. This is
+// the actual shape a skill-backed slash command arrives in — the expanded
+// prompt does not start with a bare "/", it starts with caveat/scaffold
+// text and carries this tag somewhere inside it (verified directly against
+// a live turn; also the same tag internal/analytics/tool_events.go's
+// commandNameRe and internal/rehydrate/extract.go's cmdNameRe already rely
+// on to recover an invoked command from a transcript). Checked before
+// SLASH_RE below because it is the authoritative signal.
+const COMMAND_TAG_RE = /<command-name>\/?(\S+?)<\/command-name>/;
+
 function markerPath(sid) {
   const safe = sid && !/[/\\]/.test(sid) && !sid.includes("..") ? sid : "default";
   return path.join(stateDir(), `slash-marker-${safe}.json`);
 }
 
-// parseSlashCommand returns the command name a prompt invokes, or "".
-//
-// Only a prompt that STARTS with the slash counts. "run /release when
-// you're done" is prose about a command, not an invocation of one, and
-// treating it as manual would misattribute an auto-trigger that happened
-// to be discussed.
-function parseSlashCommand(prompt) {
-  if (typeof prompt !== "string") return "";
-  const m = SLASH_RE.exec(prompt.trim());
-  if (!m) return "";
+function normalizePluginQualified(name) {
   // Normalize a plugin-qualified name to its bare skill: the Skill tool
   // reports `compress`, the user may type `/tkr:compress`.
-  const name = m[1];
   const colon = name.lastIndexOf(":");
   return colon >= 0 ? name.slice(colon + 1) : name;
+}
+
+// parseCommandTag returns the command name inside a <command-name> tag, or
+// "" when absent.
+function parseCommandTag(prompt) {
+  if (typeof prompt !== "string") return "";
+  const m = COMMAND_TAG_RE.exec(prompt);
+  if (!m) return "";
+  return normalizePluginQualified(m[1]);
+}
+
+// parseSlashCommand returns the command name a prompt invokes, or "".
+//
+// Tries the <command-name> tag first (see COMMAND_TAG_RE) since that is
+// what a real skill-backed slash command's expanded prompt actually
+// carries. Falls back to a literal leading slash for prompts with no
+// scaffold. Either way, "run /release when you're done" is prose about a
+// command, not an invocation of one, and treating it as manual would
+// misattribute an auto-trigger that happened to be discussed.
+function parseSlashCommand(prompt) {
+  if (typeof prompt !== "string") return "";
+  const tagged = parseCommandTag(prompt);
+  if (tagged) return tagged;
+  const m = SLASH_RE.exec(prompt.trim());
+  if (!m) return "";
+  return normalizePluginQualified(m[1]);
 }
 
 // recordSlashCommand writes the marker when prompt is a slash command.
@@ -136,6 +185,7 @@ function resolveInvocationSource(skillName, sid, promptID, now) {
 module.exports = {
   MARKER_TTL_MS,
   markerPath,
+  parseCommandTag,
   parseSlashCommand,
   recordSlashCommand,
   resolveInvocationSource,

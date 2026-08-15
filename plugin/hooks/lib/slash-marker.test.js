@@ -18,6 +18,7 @@ const path = require("node:path");
 
 const {
   MARKER_TTL_MS,
+  parseCommandTag,
   parseSlashCommand,
   recordSlashCommand,
   resolveInvocationSource,
@@ -56,6 +57,46 @@ test("parseSlashCommand ignores prose that merely mentions a command", () => {
   assert.strictEqual(parseSlashCommand("summarize the changes"), "");
   assert.strictEqual(parseSlashCommand(""), "");
   assert.strictEqual(parseSlashCommand(undefined), "");
+});
+
+// #278: a real skill-backed slash command's expanded prompt does not
+// start with a bare "/" — it carries CC's <command-name> scaffold
+// somewhere inside caveat/preamble text. These cover that shape.
+test("parseCommandTag reads the tag regardless of what precedes it", () => {
+  assert.strictEqual(
+    parseCommandTag("<local-command-caveat>...</local-command-caveat>\n<command-name>/handoff</command-name>\n<command-message>handoff</command-message>"),
+    "handoff"
+  );
+  assert.strictEqual(parseCommandTag("<command-name>/compress</command-name>"), "compress");
+});
+
+test("parseCommandTag normalizes a plugin-qualified tag", () => {
+  assert.strictEqual(parseCommandTag("<command-name>/tkr:continue</command-name>"), "continue");
+});
+
+test("parseCommandTag accepts the tag with no leading slash", () => {
+  assert.strictEqual(parseCommandTag("<command-name>compress</command-name>"), "compress");
+});
+
+test("parseCommandTag returns empty with no tag present", () => {
+  assert.strictEqual(parseCommandTag("/compress"), "");
+  assert.strictEqual(parseCommandTag("just talking about /compress"), "");
+  assert.strictEqual(parseCommandTag(""), "");
+  assert.strictEqual(parseCommandTag(undefined), "");
+});
+
+test("parseSlashCommand prefers the tag over a bare leading slash", () => {
+  // Real expanded prompt: starts with scaffold, not "/", and disagrees
+  // with what a naive leading-slash reading of the same text would find.
+  assert.strictEqual(
+    parseSlashCommand("<command-name>/tkr:continue</command-name>\n<command-args>foo.md</command-args>"),
+    "continue"
+  );
+});
+
+test("parseSlashCommand still falls back to a bare leading slash", () => {
+  // No scaffold present — the pre-#278 behavior is preserved.
+  assert.strictEqual(parseSlashCommand("/compress"), "compress");
 });
 
 test("a slash command in the same turn resolves manual", () => {

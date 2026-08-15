@@ -16,11 +16,11 @@ InstructionsLoaded).
 | `session-start.js` | SessionStart | Brevity reinforcement + tkr awareness banner |
 | `pre-compact.js` | PreCompact | Snapshot session + nudge `/clear` over `/compact` |
 | `memory-health.js` | Stop | Memory file rotation, dedup, staleness check |
-| `user-prompt-submit.js` | UserPromptSubmit | Reinforce brevity mode on every prompt; keepalive activity touch (`lib/keepalive-activity.js`, folded in from the former bash `activity-touch.sh` — issue #129) |
+| `user-prompt-submit.js` | UserPromptSubmit | Reinforce brevity mode on every prompt; keepalive activity touch (`lib/keepalive-activity.js`, folded in from the former bash `activity-touch.sh` — issue #129); writes the `skill-invoked` ledger's manual rows directly (`recordManualSkillInvocation`, #278) — see the `skill-invoked.js` row below for why this hook, not that one, is where they get written |
 | `instructions-loaded.js` | InstructionsLoaded | Telemetry to `~/.tkr/instructions-load.jsonl` |
 | `cache-bust-warn.js` | PreToolUse(Edit\|Write) | Warn before editing prefix-cache-critical files (PlaybookV2 L5) |
 | `long-runner-warn.js` | PreToolUse(Bash) | Warn on watch/serve/follow commands that outlive the cache TTL (L4) |
-| `skill-invoked.js` | PreToolUse(Skill) | Skill-invocation telemetry → `instructions-load.jsonl`. Schema v2 resolves `invocation_source` to `manual`/`auto` from the per-turn slash marker instead of always writing `unknown`. Schema v3 (INV-095) adds the bundled-skill payload gate: no longer pure observability. Bundled skills inject their whole reference tree as a **user-role text block, not a tool_result** (the result is ~27 chars), so no `PostToolUse` fires and no tkr filter can ever see it — the measured `claude-api` injection cost ~250K tokens against API ground truth and stays in the cached prefix for the rest of the session. Policy + measurement live in `lib/skill-bundle.js`; the hook only does I/O and emits. Threshold-based, never name-based. Default mode is **ask** (`permissionDecision:"ask"`, the human decides): the gate fires on 3.2% of Skill dispatches in the measured population (5 of 156 across 314 sessions), which is a targeted interruption rather than prompt fatigue, and `warn` offers no decision point at all — `systemMessage` renders only after the hook returns and the payload lands regardless. `TKR_SKILL_GATE=warn` de-escalates to notify-only, `=deny` blocks outright; both the ask and deny texts carry the on-disk file index so a refusal leaves the model able to read what it needed. An **absent** setting means `ask`; a **malformed** one degrades to `warn` — the weakest acting mode, never the strongest. Cost is always reported as a **range**, never a point (see `costRange()`): the tree overstates the payload while `bytes/4` understates these tokens by ~45%, and the two errors do not cancel. A **manual `/skill` is never gated** — it is the escape hatch the denial text points at. Every failure path allows |
+| `skill-invoked.js` | PreToolUse(Skill) | Skill-invocation telemetry → `instructions-load.jsonl`. Schema v2 resolves `invocation_source` to `manual`/`auto` from the per-turn slash marker instead of always writing `unknown` — but only for a genuine `PreToolUse(Skill)` dispatch, which is the AUTO case. **A typed slash command never dispatches the Skill tool at all** (#205 live dogfood, #278): Claude Code resolves it natively, so this hook structurally never fires for a manual invocation, and the marker it would join against goes unread. The manual row is written by `user-prompt-submit.js` instead (`recordManualSkillInvocation`) on the same turn the `<command-name>` tag is observed — see that hook's row above. Schema v3 (INV-095) adds the bundled-skill payload gate: no longer pure observability. Bundled skills inject their whole reference tree as a **user-role text block, not a tool_result** (the result is ~27 chars), so no `PostToolUse` fires and no tkr filter can ever see it — the measured `claude-api` injection cost ~250K tokens against API ground truth and stays in the cached prefix for the rest of the session. Policy + measurement live in `lib/skill-bundle.js`; the hook only does I/O and emits. Threshold-based, never name-based. Default mode is **ask** (`permissionDecision:"ask"`, the human decides): the gate fires on 3.2% of Skill dispatches in the measured population (5 of 156 across 314 sessions), which is a targeted interruption rather than prompt fatigue, and `warn` offers no decision point at all — `systemMessage` renders only after the hook returns and the payload lands regardless. `TKR_SKILL_GATE=warn` de-escalates to notify-only, `=deny` blocks outright; both the ask and deny texts carry the on-disk file index so a refusal leaves the model able to read what it needed. An **absent** setting means `ask`; a **malformed** one degrades to `warn` — the weakest acting mode, never the strongest. Cost is always reported as a **range**, never a point (see `costRange()`): the tree overstates the payload while `bytes/4` understates these tokens by ~45%, and the two errors do not cancel. A **manual `/skill` is never gated** — it is the escape hatch the denial text points at. Every failure path allows |
 | `subagent-outcome.js` | SubagentStop | Bounded outcome row per observed subagent stop → `subagent-outcomes.jsonl`. Records `completion:"stopped"`, never "completed" — the payload carries no status. Schema v2 also parses the worker's fenced `tkr-handoff` trailer into optional `declared_*` fields: a claim channel, not a verification one — `verification` stays `"not_observed"` on every row. Does not join; `tkr route stats` does that at read time |
 | `session-summary.js` | Stop | End-of-session value report + statusline payload cleanup |
 | `team-push.js` | SessionEnd | Debounced team telemetry push (opt-in; `TKR_TEAM_DISABLE=1`) |
@@ -40,7 +40,11 @@ InstructionsLoaded).
   `updatedInput`, since a denied call is never also rewritten.
   PostToolUse may return
   `{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"..."}}`
-  to inject context.
+  to inject context. To replace a result, use `updatedToolOutput` (never
+  `updatedToolResponse`) and preserve the original `tool_response` shape.
+  Live-verified on native Read with Claude Code 2.1.232: a shape-matched
+  object replaced both the model-visible result and persisted transcript;
+  a bare replacement string was accepted by the hook runner but ignored.
 - **Stderr** — debug only; never relied on for control flow.
 - **Exit code** — non-zero treated as failure; hook silently skipped.
   Don't use exit codes for decisions.
@@ -120,11 +124,18 @@ InstructionsLoaded).
 Convention: `~/.tkr/<feature>.{json,jsonl}` (honor `TKR_STATE_DIR` env):
 - `instructions-load.jsonl` — InstructionsLoaded telemetry (PD-1) and
   `skill-invoked` rows (schema v2). `invocation_source` is now resolved
-  rather than hedged: `manual` when the turn's prompt opened with
-  `/<skill>`, `auto` otherwise, and `unknown` only when no skill name was
-  supplied and the question could not be asked. Manual-vs-auto is the
-  whole distinction between "the skill triggered" and "the user typed the
-  command", so a ledger that says `unknown` everywhere cannot measure
+  rather than hedged: `manual` when the turn's prompt carried Claude
+  Code's `<command-name>` scaffold for that skill (or, absent scaffold, a
+  literal leading `/<skill>`), `auto` otherwise, and `unknown` only when
+  no skill name was supplied and the question could not be asked. Two
+  writers produce `manual` rows now (#278): `skill-invoked.js` for the
+  rare case a Skill-tool dispatch fires on the same turn as the marker,
+  and `user-prompt-submit.js` directly for the common case — a typed
+  slash command never dispatches the Skill tool at all, so
+  `skill-invoked.js`'s `PreToolUse(Skill)` handler structurally cannot
+  observe it; see that hook's row in the table above. Manual-vs-auto is
+  the whole distinction between "the skill triggered" and "the user typed
+  the command", so a ledger that says `unknown` everywhere cannot measure
   triggering at all.
 - `skill-bundles.json` — measured size of each skill's bundled reference
   tree, keyed by skill name (INV-095). Feeds the `skill-invoked.js` gate
@@ -157,12 +168,16 @@ Convention: `~/.tkr/<feature>.{json,jsonl}` (honor `TKR_STATE_DIR` env):
   — the hook is never told which version is about to load, so this is a
   visible lower-bound flag, not a fix for the underlying blind spot. The
   first-ever invocation of a skill on a box (no tree extracted yet at
-  all) is still ungated and cannot be otherwise: the decision is due
-  before the tool runs, and a null bundle is ambiguous between "ships no
-  bundle" (nearly every skill) and "first invocation of a big one", so
-  the gate fails open by design. The SECOND invocation is gated — the
-  first one's own skill-load extraction puts the tree on disk, and the
-  no-negative-cache rule above makes it visible immediately (#219).
+  all) cannot be measured from disk: the decision is due before the tool
+  runs, and a null bundle is ambiguous between "ships no bundle" (nearly
+  every skill) and "first invocation of a big one". Since #263 that
+  ambiguity is resolved out-of-band — the null-bundle path consults
+  `skill-manifest.json` (below), so a known-big first invocation gets a
+  real ask quoting the scraped estimate, and every manifest failure
+  degrades to the old ungated behavior. The SECOND invocation is gated
+  from the measured tree — the first one's own skill-load extraction
+  puts it on disk, and the no-negative-cache rule above makes it visible
+  immediately (#219).
   Sizes are `bytes/4` from `stat` (cache
   schema v2 stores raw bytes alongside — see below); file contents are
   never read. **The tree is not an upper bound on the
@@ -188,13 +203,42 @@ Convention: `~/.tkr/<feature>.{json,jsonl}` (honor `TKR_STATE_DIR` env):
   stored tokens deliberately stay `bytes/4` — they are `costRange()`'s low
   end by construction. Ledger schema v4 records `bundle_bytes` so rows are
   re-derivable under any divisor.
+- `skill-manifest.json` — per-CLI-version static scrape of the installed
+  binary's bundled-skill set (#263): `{ccVersion, binaryPath, binarySize,
+  binaryMtimeMs, scrapedAt, complete, skills:[{name, hasTree,
+  approxBytes, userInvocable}]}`. Written OUT of the hot path by the
+  scraper; read by `manifestEntryFor()` on the null-bundle path for
+  colon-less names only — the one case `bundleFor` is structurally blind
+  to (first invocation; extraction happens at skill-LOAD time, after the
+  gate has decided). Trusted only when the schema matches, `complete` is
+  true, the described binary still stats to the same size+mtime, and no
+  extracted version dir is newer than `ccVersion`; any failure reads as
+  "no manifest" and the dispatch stays ungated exactly as pre-#263.
+  `approxBytes` is scraped, not measured: ledger rows gated from it carry
+  `manifest_bytes` + `gate_first_invocation` (schema v6) and never the
+  `bundle_*` fields, so the scraped and measured populations stay
+  separable. Once the first invocation extracts the real tree, the
+  temp-dir measurement takes over as ground truth. Refreshed automatically:
+  `session-start.js` (startup source only) runs
+  `refreshSkillManifestIfStale()` (`lib/sessionstart/skill-manifest-refresh.js`),
+  a cheap check — no manifest, wrong schema, or the described binary no
+  longer stats to the same size+`floor(mtimeMs)` — followed by a detached,
+  unref'd `node skill-scrape.js` rescrape (60s hard kill) when stale.
+  Deliberately not keyed on `complete`: an incomplete scrape against an
+  unchanged binary would resolve the same way again, so re-running it every
+  session buys nothing. Honors `TKR_HOOKS_DISABLED`.
 - `slash-marker-<sid>.json` — one-turn record that the user's prompt was
   a slash command, written by `user-prompt-submit.js` (the only hook that
   sees the raw prompt) and read by `skill-invoked.js` (which fires later
-  and holds a skill name but no prompt). Written ONLY on slash-command
-  turns, so ordinary prompts pay one regex and no I/O. Scoped by
-  `prompt_id` with a 60s TTL as the backstop, so a marker cannot make a
-  later turn's auto trigger look manual. Honors
+  and holds a skill name but no prompt) — kept as defense-in-depth for
+  the rare case a Skill-tool dispatch does fire on the same turn. It is
+  NOT how the common case gets attributed (#278): `user-prompt-submit.js`
+  also writes the `skill-invoked` manual row directly, on this same turn,
+  because `skill-invoked.js`'s reader structurally never runs for a typed
+  command (see `instructions-load.jsonl` above). Written ONLY on
+  slash-command turns, so ordinary prompts pay one regex and no I/O.
+  Scoped by `prompt_id` with a 60s TTL as the backstop, so a marker
+  cannot make a later turn's auto trigger look manual. Honors
   `TKR_SKILL_AUDIT_DISABLED=1`. The alternative — deriving manual-vs-auto
   at read time from the session transcript — was rejected because the
   transcript rotates and the ledger is meant to outlive it.

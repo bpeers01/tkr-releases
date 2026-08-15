@@ -49,6 +49,7 @@ function benchHook(label, hookFile, payload, env) {
     const res = spawnSync(process.execPath, [path.join(HOOKS_DIR, hookFile)], {
       input,
       env,
+      windowsHide: true,
       encoding: "utf8",
       timeout: 10_000,
     });
@@ -95,7 +96,7 @@ function benchBashHook(bash, label, hookFile, payload, env, shimDir, forkLog) {
   const stdio = ["pipe", "ignore", "ignore"];
   for (let i = 0; i < ITER; i++) {
     const t0 = process.hrtime.bigint();
-    const res = spawnSync(bash, [hookPath], { input, env, stdio, timeout: 30_000 });
+    const res = spawnSync(bash, [hookPath], { input, env, stdio, timeout: 30_000, windowsHide: true });
     const ms = Number(process.hrtime.bigint() - t0) / 1e6;
     if (res.error) {
       console.error(`${label}: spawn error: ${res.error.message}`);
@@ -159,7 +160,7 @@ function main() {
   let manifest = "no";
   try {
     execFileSync(process.env.TKR_BIN || "tkr", ["rewrite", "git status"], {
-      env, stdio: "ignore", timeout: 10_000,
+      env, stdio: "ignore", timeout: 10_000, windowsHide: true,
     });
     manifest = "yes";
   } catch (err) {

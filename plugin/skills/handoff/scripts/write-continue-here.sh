@@ -12,7 +12,7 @@
 # stdin shape:
 #   {"truths": [...], "artifacts": [...], "key_links": [...],
 #    "open_threads": [...], "next_action": "...",
-#    "next_session_posture": "..."}   # optional (HAND-006)
+#    "next_session_posture": "..."}   # writer-optional; skill always sends it (HAND-006)
 #
 # Optional env:
 #   TKR_STATE_DIR        — override ~/.tkr (also where ledger lives)

@@ -46,14 +46,17 @@ the 9.1% ceiling on /clear-recoverable spend.
 ## Next Action
 - <The single most-leverage action the next session should take first>
 
-## Next-Session Posture        <!-- optional; omit when shape is unclear -->
+## Next-Session Posture
 - <Recommended model + effort for the Next Action, with the reason>
 ```
 
-The first five sections are mandatory. Writer must reject input with any
+All six sections are mandatory. Writer must reject input with any
 section empty (except `Open Threads`, which can be `- none`).
-`Next-Session Posture` is optional (`next_session_posture` in the writer
-JSON) and is omitted from the rendered file when absent.
+`Next-Session Posture` (`next_session_posture` in the writer JSON) is
+always populated — when the Next Action's shape is genuinely
+ambiguous, the fallback is the default posture stated explicitly by
+name ("Sonnet, Medium — Next Action's shape isn't distinctive enough
+to justify escalating either axis"), not an empty section.
 
 The body must NOT contain live session state — ctx size, turn
 count, `[tkr:]` injection text, cache age, pressure verbs. Those
@@ -100,10 +103,15 @@ Override via `TKR_HANDOFF_TARGET` / `--target <path>`.
    from handoff — that busts the prefix cache (CACHE-001).
 2. **Dry-run mode** — if invoked with `--dry-run`, print the preview
    to stdout and exit without writing.
-3. **Write** — pipe the section JSON to
-   `scripts/write-continue-here.sh`. Writer is atomic (tmp + mv) and
-   always writes (no confirm gate). Per-session filenames overwrite
-   in place.
+3. **Write** — write the section JSON to a scratch file with the
+   Write tool first (never a Bash heredoc for this payload — INV-115:
+   Bash-tool heredocs >=~7.7KB reliably fail with an "unexpected EOF"
+   shell parse error; transport-side chunking, not model-composed
+   malformed content; the file-write-then-invoke sequence sidesteps
+   the threshold unconditionally regardless of payload size), then
+   invoke `scripts/write-continue-here.sh < <scratch-file-path>` as a
+   separate Bash call. Writer is atomic (tmp + mv) and always writes
+   (no confirm gate). Per-session filenames overwrite in place.
 4. **Emit** — writer records `{layer:"L2", event:"taken", outcome:
    {action:"handoff_skill_invoked", savings_estimate_cu:...,
    latency_turns:0}}` to `~/.tkr/playbook-events.jsonl`. Suppress with
@@ -140,8 +148,21 @@ Override via `TKR_HANDOFF_TARGET` / `--target <path>`.
       re-reading, so pasting the line costs nothing.
 
    c. **The posture line** — recommended model + effort for the Next
-      Action, one sentence with the reason (see below). Skip it, and
-      say nothing, when the shape isn't clear enough to justify one.
+      Action, one sentence with the reason (see below). Always emit
+      it; when the shape isn't distinctive, the line is the default
+      posture stated explicitly by name ("Sonnet, Medium — nothing
+      about the Next Action calls for escalating"), never silence.
+
+   b and c are the two load-bearing lines of the whole summary — "how
+   do I pick this up" and "should I change model/effort right after
+   /clear" — and they render back-to-back, immediately after each
+   other with nothing in between (no explanatory prose, no blank
+   commentary line beyond the one paragraph break):
+
+   ```
+   /tkr:continue .tkr/handoffs/wave23-plans-corrected-20260809-2022.md
+   Posture: Sonnet, Medium — nothing about the Next Action calls for escalating.
+   ```
 
    HAND-005: SessionStart injects the body directly when the session
    started from `/clear` and this is the only handoff written in the
@@ -164,22 +185,46 @@ Derive the recommendation from the **shape of the Next Action**, not
 from how this session felt:
 
 - Classifier, routing, architecture, or measurement-design work →
-  suggest Opus/Fable, above-default effort.
-- Filter/TOML batches, mechanical sweeps, doc edits → Sonnet at default
-  effort; say so explicitly, since the useful recommendation is often
-  "don't escalate."
+  suggest e.g. "Opus, High" (or Fable where that's the house model).
+- Filter/TOML batches, mechanical sweeps, doc edits → "Sonnet, Medium";
+  say so explicitly, since the useful recommendation is often "don't
+  escalate."
 - Split the two axes with the AGENTS.md heuristic: escalate the **model**
   when the work needs knowledge the session lacked; escalate **effort**
   when it needs more tries, deeper search, or verification that got
   skipped.
 
-State the reason in the same sentence ("Next Action is classifier
-morphology → Opus + high effort; word-boundary semantics need judgment,
-not throughput"). This is a policy heuristic with no outcome data behind
-it — the same `calibration=assumed` standing as `tkr route advise`
-(ADR-0032 §4). Never emit a bare "use Opus, high effort" with no reason,
-and never default to escalation when the shape is ambiguous: omit the
-line instead.
+Always name both the model and the effort level explicitly (Sonnet /
+Opus / Fable × Low / Medium / High / XHigh / Max) — never "default
+effort" or "escalate effort" as a stand-in for the actual tier. State
+the reason in the same sentence ("Next Action is classifier morphology
+→ Opus, High; word-boundary semantics need judgment, not throughput").
+This is a policy heuristic with no outcome data behind it — the same
+`calibration=assumed` standing as `tkr route advise` (ADR-0032 §4).
+Never emit a bare "use Opus, High" with no reason, and never default to
+escalation when the shape is ambiguous — the posture line still ships
+every time, it just names the default tier explicitly ("Sonnet,
+Medium") plus the reason nothing pushed off it,
+instead of going silent.
+
+## Read side — which resume verb
+
+This skill is the write side. Three readers consume what it writes, and
+the summary in step 5 should name the first one only; the others are for
+when it turns out thin.
+
+| Situation | Verb |
+|---|---|
+| Normal resume — the Next Action is enough | `/continue` (~1.6k, curated) |
+| Handoff is stale, or you need what was actually *tried* — commands, reversals, subagent findings | `/rehydrate` (12–27k, prior thread verbatim, tool output dropped) |
+| No usable handoff at all | `/continue --jsonl` (~5k skeleton) |
+
+`/rehydrate` does not replace this skill and is not something to write
+for: a handoff synthesizes decisions that were never written down, which
+needs the live model; extraction can only carry what the session actually
+said. It also needs nothing done before the `/clear` — the prior
+transcript is frozen and complete on disk either way. The two compose:
+handoff for the plan, thread for the detail.
 
 ## Behavior
 

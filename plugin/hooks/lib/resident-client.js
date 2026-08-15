@@ -35,6 +35,7 @@ const PROTO = 1;
 const ENDPOINT_SCHEMA = 1;
 const MAX_BODY = 32 * 1024 * 1024;
 const MAX_HEADER = 64 * 1024;
+const NATIVE_NETWORK = process.platform === "win32" ? "pipe" : "unix";
 
 // Client deadline for one request. Deliberately far tighter than the server's
 // own per-op budget: the point is to fall back to a spawn early, not to wait
@@ -159,7 +160,7 @@ function readEndpoint(key, env = process.env) {
   if (!ep || typeof ep !== "object") return null;
   if (ep.schema !== ENDPOINT_SCHEMA || ep.proto !== PROTO) return null;
   if (!ep.address || !ep.token || !(ep.pid > 0)) return null;
-  if (ep.network !== "unix" && ep.network !== "tcp") return null;
+  if (ep.network !== NATIVE_NETWORK) return null;
 
   // The runtime must be running the same binary this hook would otherwise
   // spawn. Different TKR_BIN → different tkr → do not let one serve the other.
@@ -261,14 +262,7 @@ function request(ep, header, body, budgetMs) {
 
     const timer = setTimeout(() => done("timeout"), budgetMs);
 
-    const target = ep.network === "unix" ? { path: ep.address } : tcpTarget(ep.address);
-    if (!target) {
-      clearTimeout(timer);
-      resolve(null);
-      return;
-    }
-
-    const socket = net.connect(target);
+    const socket = net.connect({ path: ep.address });
     socket.on("error", () => done(null));
 
     let head = null;
@@ -330,14 +324,6 @@ function request(ep, header, body, budgetMs) {
       if (payload.length) socket.write(payload);
     });
   });
-}
-
-function tcpTarget(address) {
-  const idx = String(address).lastIndexOf(":");
-  if (idx < 0) return null;
-  const port = Number.parseInt(address.slice(idx + 1), 10);
-  if (!Number.isFinite(port) || port <= 0) return null;
-  return { host: "127.0.0.1", port };
 }
 
 // call is the single entry point. Returns {exit, body} on a served request, or

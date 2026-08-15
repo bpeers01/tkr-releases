@@ -58,9 +58,13 @@ const DEBUG_LOG = path.join(TKR_STATE_DIR, "pre-compact-debug.log");
 // process.env.TKR_SESSION_ID set at runMain entry, matching the v2 scoping
 // in hooks/lib/statusline-path.js.
 
-// Thresholds that trigger the clear-nudge.
-const TURNS_WARN  = 50;  // mirrors signals.go SessionLongTurns
-const TURNS_HARD  = 80;  // mirrors signals.go SessionExtendedTurns
+// Thresholds that trigger the clear-nudge. Recalibrated 2026-08-14 against
+// a real 30-day session-turns population (p75/p97) — mirrors signals.go
+// SessionWarnTurns/SessionHeaviestTurns. Deliberately skips the new middle
+// "heavy" tier (SessionHeavyTurns=100): this hook is a binary nudge, not a
+// 3-rung color ramp, so it keeps the same two checkpoints it always had.
+const TURNS_WARN  = 75;  // mirrors signals.go SessionWarnTurns
+const TURNS_HARD  = 150; // mirrors signals.go SessionHeaviestTurns
 const CAP_WARN_PCT = 70; // mirrors PRD §18 Feature 4 threshold
 const BYPASS_TTL_MS = 60_000; // 60s bypass window
 

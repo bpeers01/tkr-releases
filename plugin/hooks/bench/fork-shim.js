@@ -35,7 +35,7 @@ const SHIM_COMMANDS = [
 ];
 
 function findBash() {
-  const probe = spawnSync("bash", ["-c", "exit 0"]);
+  const probe = spawnSync("bash", ["-c", "exit 0"], { windowsHide: true });
   return probe.error ? null : "bash";
 }
 
@@ -84,6 +84,7 @@ function countForksDetailed(bash, hookPath, payload, env, shimDir, forkLog) {
       env: shimEnv,
       stdio: ["pipe", "ignore", "ignore"],
       timeout: 30_000,
+      windowsHide: true,
     });
     if (res.error) {
       return { forks: -1, error: `spawn failed: ${res.error.code || res.error.message}` };

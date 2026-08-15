@@ -90,7 +90,15 @@ const skillBundle = require("./lib/skill-bundle");
 // Absent on a v5 row only when the skill has no bundle at all (same
 // all-or-nothing rule as the other bundle_* fields); absent on an
 // earlier row means the writer predated the concept.
-const SCHEMA_VERSION = 5;
+// v5 -> v6: adds the #263 first-invocation fields — `manifest_bytes` +
+// `gate_first_invocation:true`, written with `gate_mode`/`gate_action`
+// when the gate fired from the binary-scrape manifest instead of a
+// measured tree (nothing extracted on this box yet). The bundle_*
+// fields stay absent on such a row on purpose: one population is
+// measured, the other scraped, and a reader must not sum them as one.
+// Absence of the pair on a v6 row means the gate ran from a real tree
+// or not at all.
+const SCHEMA_VERSION = 6;
 
 function skillAuditDisabled() {
   return process.env.TKR_SKILL_AUDIT_DISABLED === "1";
@@ -141,6 +149,14 @@ function buildRow(input, gateInfo) {
       row.bundle_dir_version = gateInfo.bundle.version;
       row.bundle_cross_version = Boolean(gateInfo.bundle.crossVersion);
     }
+  } else if (gateInfo && gateInfo.firstInvocation && gateInfo.entry) {
+    // #263 manifest-gated row. Deliberately not reusing bundle_*: this
+    // size is scraped, not measured, and the two populations must stay
+    // separable in the ledger.
+    row.manifest_bytes = gateInfo.entry.approxBytes;
+    row.gate_first_invocation = true;
+    row.gate_mode = gateInfo.mode;
+    row.gate_action = gateInfo.action;
   }
   return row;
 }
@@ -199,6 +215,36 @@ function main() {
             bundleTokens: bundle.tokens,
           });
           gateInfo = { bundle, mode: verdict.mode, action: verdict.action, threshold: verdict.threshold };
+        } else {
+          // #263: a null bundle on a colon-less name is ambiguous —
+          // "ships no bundle" or "first invocation, tree not extracted
+          // yet". The binary-scrape manifest disambiguates ahead of
+          // time. Every manifest failure means null, and the dispatch
+          // stays ungated exactly as before the manifest existed.
+          const entry = skillBundle.manifestEntryFor(skill);
+          if (
+            entry &&
+            entry.hasTree === true &&
+            Number.isFinite(entry.approxBytes) &&
+            entry.approxBytes > 0
+          ) {
+            const verdict = skillBundle.gate({
+              env: process.env,
+              source: resolveInvocationSource(
+                skill,
+                (input && input.session_id) || "",
+                (input && input.prompt_id) || ""
+              ),
+              bundleTokens: Math.floor(entry.approxBytes / 4),
+            });
+            gateInfo = {
+              entry,
+              firstInvocation: true,
+              mode: verdict.mode,
+              action: verdict.action,
+              threshold: verdict.threshold,
+            };
+          }
         }
       } catch {
         gateInfo = null;
@@ -214,7 +260,9 @@ function main() {
       if (gateInfo && gateInfo.action === "deny") {
         // Both response forms for Claude Code version compat, per
         // hooks/CLAUDE.md § Hook contract. No updatedInput on a deny.
-        const detail = skillBundle.buildRedirect(skill, gateInfo.bundle);
+        const detail = gateInfo.firstInvocation
+          ? skillBundle.buildFirstInvocationAskReason(skill, gateInfo.entry)
+          : skillBundle.buildRedirect(skill, gateInfo.bundle);
         process.stdout.write(
           JSON.stringify({
             decision: "block",
@@ -238,7 +286,9 @@ function main() {
             hookSpecificOutput: {
               hookEventName: "PreToolUse",
               permissionDecision: "ask",
-              permissionDecisionReason: skillBundle.buildAskReason(skill, gateInfo.bundle),
+              permissionDecisionReason: gateInfo.firstInvocation
+                ? skillBundle.buildFirstInvocationAskReason(skill, gateInfo.entry)
+                : skillBundle.buildAskReason(skill, gateInfo.bundle),
             },
           })
         );
@@ -250,7 +300,9 @@ function main() {
         // context — the whole point of warn mode.
         process.stdout.write(
           JSON.stringify({
-            systemMessage: skillBundle.buildWarning(skill, gateInfo.bundle, gateInfo.threshold),
+            systemMessage: gateInfo.firstInvocation
+              ? skillBundle.buildFirstInvocationWarning(skill, gateInfo.entry, gateInfo.threshold)
+              : skillBundle.buildWarning(skill, gateInfo.bundle, gateInfo.threshold),
           })
         );
         return;

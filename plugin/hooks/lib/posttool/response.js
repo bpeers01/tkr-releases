@@ -1,18 +1,18 @@
 // Build a PostToolUse hookSpecificOutput response with replacement text.
 
 function makeResponse(event, outputInfo, replacementText, additionalCtx) {
-  const updatedToolResponse = {
+  const updatedToolOutput = {
     ...event.tool_response,
   };
   if (outputInfo.field === "content" && outputInfo.asArray) {
-    updatedToolResponse.content = [{ type: "text", text: replacementText }];
+    updatedToolOutput.content = [{ type: "text", text: replacementText }];
   } else {
-    updatedToolResponse[outputInfo.field] = replacementText;
+    updatedToolOutput[outputInfo.field] = replacementText;
   }
   const resp = {
     hookSpecificOutput: {
       hookEventName: "PostToolUse",
-      updatedToolResponse,
+      updatedToolOutput,
     },
   };
   if (additionalCtx) resp.hookSpecificOutput.additionalContext = additionalCtx;

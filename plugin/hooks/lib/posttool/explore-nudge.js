@@ -147,7 +147,7 @@ function checkExplorationPattern(event) {
     return {
       hookSpecificOutput: {
         hookEventName: "PostToolUse",
-        updatedToolResponse: {
+        updatedToolOutput: {
           ...response,
           ...(response.stdout != null
             ? { stdout: existing + nudgeText }

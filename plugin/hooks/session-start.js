@@ -84,6 +84,9 @@ const {
 const {
   appendVersionLedger,
 } = require("./lib/sessionstart/version-ledger");
+const {
+  refreshSkillManifestIfStale,
+} = require("./lib/sessionstart/skill-manifest-refresh");
 
 const extractSessionID = getSessionID;
 
@@ -298,6 +301,10 @@ function runMain(inputRaw) {
     // the statusline never paints a leftover badge from a prior session.
     // Fire-and-forget; binary writes via TickAuto in <100ms.
     try { spawnModeAuto(sid, spawnBounded); } catch {}
+    // #263 follow-up: keep skill-manifest.json current so the first-
+    // invocation gate doesn't go permanently blind after a CLI upgrade.
+    // Cheap staleness check; detached rescrape only when stale.
+    try { refreshSkillManifestIfStale(); } catch {}
   }
 
   // HAND-008: two output formats, deliberately. Plain stdout is what this

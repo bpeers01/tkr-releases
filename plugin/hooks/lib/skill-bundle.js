@@ -54,6 +54,11 @@ const DEFAULT_THRESHOLD_TOKENS = 25_000;
 // Redirect index is itself context. Cap it and say so when truncating —
 // a silent cap reads as "that's the whole tree" when it isn't.
 const MAX_INDEX_ROWS = 24;
+// #263 — binary-scrape manifest: what the installed CLI would extract,
+// known ahead of the FIRST invocation (the one bundleFor cannot see).
+// Written out of the hot path by the scraper; read-only here.
+const MANIFEST_FILE = "skill-manifest.json";
+const MANIFEST_SCHEMA = 1;
 
 // ---------------------------------------------------------------------
 // Pure section — no I/O, no env mutation. Safe to unit-test directly.
@@ -499,6 +504,87 @@ function bundleFor(skill, opts) {
   return { ...m, version: resolved.version, crossVersion: crossVersionFor(resolved.version, o.root) };
 }
 
+// #263 — consult the scrape manifest for a colon-less name whose bundle
+// resolution came up null: the one case bundleFor is structurally blind to
+// (first invocation on this box — extraction happens at skill-LOAD time,
+// after this hook has decided). Pure lookup: returns the scraped row as-is;
+// hasTree/threshold policy belongs to the gate wiring. Every failure means
+// null — absent, corrupt, wrong schema, incomplete scrape, a binary that
+// changed since the scrape (or one we cannot stat), or a version dir newer
+// than the scraped ccVersion already extracted on disk. Null always
+// degrades to pre-manifest behavior (first invocation ungated), never to a
+// block.
+function manifestEntryFor(skill, opts) {
+  if (!looksBundled(skill)) return null;
+  const o = opts || {};
+  let m;
+  try {
+    m = JSON.parse(fs.readFileSync(path.join(stateDir(), MANIFEST_FILE), "utf8"));
+  } catch {
+    return null;
+  }
+  if (!m || m.schema !== MANIFEST_SCHEMA || m.complete !== true || !Array.isArray(m.skills)) {
+    return null;
+  }
+  // The manifest describes ONE exact binary. A size or mtime mismatch —
+  // or a binary we cannot stat — means a different CLI than the one
+  // scraped, so its sizes are fiction.
+  if (typeof m.binaryPath !== "string" || m.binaryPath === "") return null;
+  let st;
+  try {
+    st = fs.statSync(m.binaryPath);
+  } catch {
+    return null;
+  }
+  if (st.size !== m.binarySize || Math.floor(st.mtimeMs) !== m.binaryMtimeMs) return null;
+  // Zero-cost cross-check: an extracted version dir newer than the scraped
+  // version means the CLI moved on even if the path we stat'd did not.
+  const newest = newestVersionPresent(o.root || bundleRootDir());
+  if (newest && typeof m.ccVersion === "string" && compareVersions(newest, m.ccVersion) > 0) {
+    return null;
+  }
+  const row = m.skills.find((s) => s && s.name === skill);
+  return row || null;
+}
+
+// Ask text for a FIRST invocation: nothing is on disk yet, so the size is
+// the scraper's estimate and there is no file index to offer. Same range
+// discipline as every other gate text — never a point estimate.
+function buildFirstInvocationAskReason(skill, entry) {
+  const r = costRange(Math.floor(entry.approxBytes / 4));
+  const lines = [
+    `tkr gate: "${skill}" was auto-invoked (you did not type it). This is its`,
+    `first invocation on this machine — no reference tree is on disk yet, but`,
+    `the CLI-binary scrape manifest says it bundles ~${fmt(entry.approxBytes)} bytes:`,
+    `an estimated ${r.text} (scraped, not measured), injected as one`,
+    `un-filterable block that then stays in the cached prefix for the rest of`,
+    `the session. The skill's args do not scope it.`,
+    ``,
+    `  Deny  — nothing extracts; proceed without the reference, or the USER`,
+    `          can invoke /${skill} explicitly — manual is never gated.`,
+    `  Allow — the whole payload lands (and the tree extracts for next time,`,
+    `          so later invocations get a measured gate).`,
+    ``,
+    `Stop being asked: TKR_SKILL_GATE=warn (notify only) or =off (silent).`,
+    `TKR_SKILL_GATE=deny blocks without asking.`,
+  ];
+  return lines.join("\n");
+}
+
+// Warn-mode counterpart for a first invocation. Same channel rules as
+// buildWarning: goes to `systemMessage`, renders to the user, costs zero
+// model context — the payload is landing anyway.
+function buildFirstInvocationWarning(skill, entry, threshold) {
+  const r = costRange(Math.floor(entry.approxBytes / 4));
+  return (
+    `tkr: "${skill}" auto-invoked — first invocation on this machine; the ` +
+    `CLI-binary scrape manifest estimates ${r.text} ` +
+    `(scraped, not measured; threshold ${fmt(threshold)}). Not filterable, ` +
+    `stays in the cached prefix. TKR_SKILL_GATE=ask to be asked first, ` +
+    `=deny to block; /${skill} always passes.`
+  );
+}
+
 module.exports = {
   gate,
   gateMode,
@@ -515,9 +601,14 @@ module.exports = {
   compareVersions,
   newestVersionPresent,
   looksBundled,
+  manifestEntryFor,
+  buildFirstInvocationAskReason,
+  buildFirstInvocationWarning,
   DEFAULT_MODE,
   DEFAULT_THRESHOLD_TOKENS,
   DENSE_CHARS_PER_TOKEN,
   MISS_TTL_MS,
   MAX_INDEX_ROWS,
+  MANIFEST_FILE,
+  MANIFEST_SCHEMA,
 };

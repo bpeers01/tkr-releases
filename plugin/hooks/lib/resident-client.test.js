@@ -18,6 +18,7 @@ const { spawnSync } = require("node:child_process");
 
 const REPO = path.resolve(__dirname, "..", "..");
 const WIN = process.platform === "win32";
+let endpointSerial = 0;
 
 // Each test gets its own state dir. The module caches nothing at import time,
 // but stateDir() is read per call, so the env has to be set before require —
@@ -54,8 +55,10 @@ function writeEndpoint(client, key, overrides) {
     proto: client.PROTO,
     version: "test",
     pid: process.pid,
-    network: "unix",
-    address: path.join(runDir, `${key}.sock`),
+    network: WIN ? "pipe" : "unix",
+    address: WIN
+      ? `\\\\.\\pipe\\tkrres-test-${process.pid}-${key}-${++endpointSerial}`
+      : path.join(runDir, `${key}.sock`),
     token: "tok".repeat(10),
     project_root: "/p",
     exe,
@@ -89,25 +92,10 @@ function frameHandler(handler) {
   };
 }
 
-// serveEndpoint stands up a fake runtime and writes a matching endpoint file
-// on the transport the PRODUCTION client selects on this platform: AF_UNIX on
-// POSIX, loopback TCP on win32. Node cannot bind an AF_UNIX server socket on
-// Windows (listen fails EACCES with port -1), and the real runtime never
-// offers one there either — internal/resident/listen_windows.go serves
-// loopback TCP + token. Forcing network:"unix" here on Windows tested a
-// transport no Windows install can ever dial, while leaving the one it does
-// use uncovered. The wire-format properties under test are transport-agnostic;
-// POSIX still runs them over the Unix socket, so its coverage is unchanged.
+// serveEndpoint stands up a fake runtime on the production transport for this
+// platform: AF_UNIX on POSIX and a named pipe on Windows.
 async function serveEndpoint(client, key, handler) {
   const server = net.createServer(frameHandler(handler));
-  if (WIN) {
-    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const ep = writeEndpoint(client, key, {
-      network: "tcp",
-      address: `127.0.0.1:${server.address().port}`,
-    });
-    return { ep, server };
-  }
   const ep = writeEndpoint(client, key);
   await new Promise((resolve) => server.listen(ep.address, resolve));
   return { ep, server };
@@ -467,117 +455,22 @@ test("garbage on the wire returns null", async () => {
   }
 });
 
-// ── the Windows transport's client half ─────────────────────────────────────
-//
-// On Windows the runtime listens on a loopback TCP port instead of a Unix
-// socket (Node cannot speak AF_UNIX there; see internal/resident/listen_windows.go).
-// That branch of this client is the code Windows will actually run, and it had
-// NO coverage on any platform — the Go side is build-tagged out on Unix, and
-// the integration test skips on Windows by design.
-//
-// These tests do not validate Windows. They validate the CLIENT half of the
-// Windows transport, which is platform-independent code, on a platform that
-// can run it. The gate in #209 stays open.
-
-test("tcp endpoint: a served request works over loopback", async () => {
-  const dir = tmpState("tcp");
+test("endpoint validation refuses a non-native transport", () => {
+  const dir = tmpState("foreign-transport");
   const client = freshClient(dir);
   const key = client.keyFor("/p");
-
-  const server = net.createServer((socket) => {
-    let buf = Buffer.alloc(0);
-    let head = null;
-    socket.on("data", (chunk) => {
-      buf = Buffer.concat([buf, chunk]);
-      if (head === null) {
-        const nl = buf.indexOf(0x0a);
-        if (nl < 0) return;
-        head = JSON.parse(buf.subarray(0, nl).toString("utf8"));
-        buf = buf.subarray(nl + 1);
-      }
-      if (buf.length < head.n) return;
-      // On loopback TCP the token is the ONLY access control — there is no
-      // 0700 directory doing the work. Assert the client sends it.
-      assert.ok(head.token, "token must be sent on the tcp transport");
-      reply(socket, { exit: 0, body: `tcp:${buf.subarray(0, head.n).toString()}` });
-    });
-    socket.on("error", () => {});
-  });
-
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const port = server.address().port;
-  try {
-    const ep = writeEndpoint(client, key, { network: "tcp", address: `127.0.0.1:${port}` });
-    const res = await client.call("filter-stdin", "df -h", "payload", {
-      projectRoot: "/p",
-      env: { ...ENV_ON, TKR_BIN: ep.exe },
-    });
-    assert.ok(res, "expected a served response over tcp");
-    assert.equal(res.body.toString(), "tcp:payload");
-  } finally {
-    server.close();
-  }
-});
-
-test("tcp endpoint: an unparseable address returns null, never throws", async () => {
-  const dir = tmpState("tcpbad");
-  const client = freshClient(dir);
-  for (const address of ["", "127.0.0.1", "127.0.0.1:", "127.0.0.1:notaport", "127.0.0.1:0", "::1"]) {
-    const key = client.keyFor("/p-" + address);
-    const ep = writeEndpoint(client, key, { network: "tcp", address });
-    const res = await client.call("rewrite", "git status", null, {
-      projectRoot: "/p-" + address,
-      env: { ...ENV_ON, TKR_BIN: ep.exe },
-      timeoutMs: 200,
-    });
-    assert.equal(res, null, `address ${JSON.stringify(address)} must not be dialed`);
-  }
-});
-
-// The runtime binds 127.0.0.1 explicitly and never 0.0.0.0. The client must
-// not undo that by honoring a host from the endpoint file: a runtime whose
-// address somehow named an external interface must still only ever be dialed
-// on loopback.
-test("tcp endpoint: the client always dials loopback, whatever host is named", async () => {
-  const dir = tmpState("tcploopback");
-  const client = freshClient(dir);
-  const key = client.keyFor("/p");
-
-  const server = net.createServer((socket) => reply(socket, { exit: 7, body: "loopback" }));
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const port = server.address().port;
-  try {
-    // An endpoint naming a non-loopback host. If the client honored it, this
-    // would fail to connect (or worse, reach a real host).
-    const ep = writeEndpoint(client, key, { network: "tcp", address: `203.0.113.7:${port}` });
-    const res = await client.call("rewrite", "git status", null, {
-      projectRoot: "/p",
-      env: { ...ENV_ON, TKR_BIN: ep.exe },
-      timeoutMs: 2000,
-    });
-    assert.ok(res, "client should have dialed loopback regardless of the named host");
-    assert.equal(res.exit, 7);
-  } finally {
-    server.close();
-  }
+  const foreign = WIN
+    ? { network: "tcp", address: "127.0.0.1:12345" }
+    : { network: "pipe", address: "\\\\.\\pipe\\tkrres-foreign" };
+  const ep = writeEndpoint(client, key, foreign);
+  assert.equal(client.readEndpoint(key, { TKR_BIN: ep.exe }), null);
 });
 
 test("a stale socket (endpoint present, nobody listening) returns null fast", async () => {
   const dir = tmpState("stale");
   const client = freshClient(dir);
   const key = client.keyFor("/p");
-  if (WIN) {
-    // The Windows shape of "stale": a tcp endpoint whose port nobody holds
-    // anymore — the runtime died and the OS freed it. Bind-then-close yields
-    // a port that is real but unowned, so the dial is refused immediately.
-    const probe = net.createServer();
-    await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
-    const port = probe.address().port;
-    await new Promise((resolve) => probe.close(resolve));
-    writeEndpoint(client, key, { network: "tcp", address: `127.0.0.1:${port}` });
-  } else {
-    writeEndpoint(client, key); // no server ever started on the .sock
-  }
+  writeEndpoint(client, key); // no server ever started on the socket/pipe
   const t0 = Date.now();
   const res = await client.call("rewrite", "git status", null, {
     projectRoot: "/p",

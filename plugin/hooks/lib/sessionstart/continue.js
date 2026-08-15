@@ -66,6 +66,9 @@ function resolveMainRoot(base) {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"],
         env: gitEnv,
+        // SessionStart runs console-less, so without this Windows opens a
+        // visible console for the git probe on every session start.
+        windowsHide: true,
       },
     ).trim();
     if (commonDir) {
@@ -310,7 +313,8 @@ function v2HandoffAdvisory(files, sid) {
     );
     return (
       `\n**[continue]** handoff at \`${relPath}\` is ${ageD}d old — ` +
-      `run /continue if still relevant; confirm before acting on Next Action.${oldSuffix}`
+      `run /continue if still relevant; confirm before acting on Next Action. ` +
+      `If it reads too thin, /rehydrate replays the prior thread.${oldSuffix}`
     );
   }
   // Multiple files.

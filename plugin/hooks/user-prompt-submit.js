@@ -1428,6 +1428,63 @@ function recordSlashMarker(input) {
   } catch {
     // Attribution is telemetry; it never blocks a prompt.
   }
+  recordManualSkillInvocation(input);
+}
+
+// SKILL_INVOKED_SCHEMA_VERSION mirrors skill-invoked.js's row shape so a
+// manual row and an auto row are indistinguishable to any reader except
+// by invocation_source. Requiring the module (rather than duplicating the
+// constant) means a future schema bump only needs to happen once.
+const { SCHEMA_VERSION: SKILL_INVOKED_SCHEMA_VERSION } = require("./skill-invoked.js");
+
+// recordManualSkillInvocation appends a skill-invoked ledger row directly
+// on this turn, instead of relying on hooks/skill-invoked.js's
+// PreToolUse(Skill) handler to observe it later.
+//
+// Root cause (#278, settled by #205's live dogfood): a typed slash
+// command that resolves to a skill never dispatches the Skill tool at
+// all — Claude Code resolves it natively — so PreToolUse(Skill)
+// structurally never fires for this case and skill-invoked.js never
+// runs. hooks/lib/slash-marker.js's marker-and-join design assumed a
+// later reader would exist; it does not, for this path. This turn is the
+// only place the signal exists, so it is recorded here.
+//
+// Fires only when the prompt carries Claude Code's `<command-name>`
+// scaffold (slashMarker.parseCommandTag) — the same tag
+// internal/analytics/tool_events.go and internal/rehydrate/extract.go
+// already rely on to recover an invoked command from a transcript. No
+// skill-name registry check: scripts/ctx-audit.py's
+// count_skills_from_ledger matches skill_name against known skills at
+// READ time (qualified name, falling back to bare name); a row naming a
+// non-skill built-in command (e.g. /clear) simply matches nothing and is
+// inert, the same tolerance the pre-existing marker write already had.
+//
+// Never carries INV-095 gate fields — a manual invocation is never
+// gated (see skill-invoked.js), so there is no gate verdict to record.
+function recordManualSkillInvocation(input) {
+  try {
+    if (hooksDisabled()) return;
+    if (process.env.TKR_SKILL_AUDIT_DISABLED === "1") return;
+    const promptText = (input && input.prompt) ? String(input.prompt) : "";
+    if (!promptText) return;
+    const name = slashMarker.parseCommandTag(promptText);
+    if (!name) return;
+    const row = {
+      ts: new Date().toISOString(),
+      event: "skill-invoked",
+      skill_name: name,
+      invocation_source: "manual",
+      session_id: extractSessionID(input || {}) || "",
+      schema_version: SKILL_INVOKED_SCHEMA_VERSION,
+    };
+    const dir = stateDir();
+    const logPath = path.join(dir, "instructions-load.jsonl");
+    fs.mkdirSync(dir, { recursive: true });
+    rotateIfLarge(logPath);
+    fs.appendFileSync(logPath, JSON.stringify(row) + "\n");
+  } catch {
+    // Best-effort telemetry; never blocks a prompt.
+  }
 }
 
 function workRouteContext(input, tel) {
@@ -1943,4 +2000,6 @@ module.exports = {
   tierCrossContext,
   tierCrossFilePath,
   writeInjectionLogRow,
+  recordSlashMarker,
+  recordManualSkillInvocation,
 };

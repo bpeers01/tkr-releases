@@ -358,6 +358,110 @@ test("a bundle under threshold is silent even in deny mode", () => {
   }
 });
 
+// --- #263 first-invocation manifest gate, end to end ------------------
+
+// bundleFor must genuinely come up null: the bundle root lives under
+// os.tmpdir(), so point the child's tmpdir (TMPDIR/TEMP/TMP) at an empty
+// dir. The manifest and the fake binary it describes live in the state
+// dir, exactly where the scraper writes them.
+function runManifestGated(payload, extraEnv, mutate) {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-skill-gate-"));
+  const fakeTmp = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-empty-tmp-"));
+  const bin = path.join(tmp, "claude.exe");
+  fs.writeFileSync(bin, "b".repeat(4096));
+  const st = fs.statSync(bin);
+  const manifest = {
+    schema: 1,
+    ccVersion: "2.1.227",
+    binaryPath: bin,
+    binarySize: st.size,
+    binaryMtimeMs: Math.floor(st.mtimeMs),
+    scrapedAt: "2026-08-11T00:00:00.000Z",
+    complete: true,
+    skills: [{ name: "claude-api", hasTree: true, approxBytes: 867776, userInvocable: true }],
+  };
+  if (mutate) mutate(manifest, tmp);
+  fs.writeFileSync(path.join(tmp, "skill-manifest.json"), JSON.stringify(manifest));
+  const env = { ...process.env, TKR_STATE_DIR: tmp, TMPDIR: fakeTmp, TEMP: fakeTmp, TMP: fakeTmp };
+  for (const k of [
+    "TKR_HOOKS_DISABLED",
+    "TKR_SKILL_AUDIT_DISABLED",
+    "TKR_SKILL_GATE",
+    "TKR_SKILL_GATE_DISABLED",
+    "TKR_SKILL_GATE_THRESHOLD",
+  ]) {
+    delete env[k];
+  }
+  Object.assign(env, extraEnv || {});
+  const res = spawnSync(process.execPath, [HOOK], {
+    input: JSON.stringify(payload),
+    env,
+    encoding: "utf8",
+  });
+  const log = path.join(tmp, LOG_NAME);
+  const rows = fs.existsSync(log)
+    ? fs.readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse)
+    : [];
+  let out = {};
+  try {
+    out = JSON.parse(res.stdout);
+  } catch {
+    out = { __unparsed: res.stdout };
+  }
+  return { res, out, rows, tmp, fakeTmp };
+}
+
+test("first invocation: the scrape manifest gates what bundleFor cannot see (#263)", () => {
+  const { out, rows, tmp, fakeTmp } = runManifestGated(gatedCall);
+  try {
+    assert.strictEqual(out.hookSpecificOutput.permissionDecision, "ask");
+    const why = out.hookSpecificOutput.permissionDecisionReason;
+    assert.match(why, /first invocation/i);
+    // 867,776 scraped bytes as a range, never a point.
+    assert.match(why, /217K/);
+    assert.match(why, /316K/);
+    assert.strictEqual(rows.length, 1);
+    assert.strictEqual(rows[0].gate_first_invocation, true);
+    assert.strictEqual(rows[0].manifest_bytes, 867776);
+    assert.strictEqual(rows[0].gate_mode, "ask");
+    assert.strictEqual(rows[0].gate_action, "ask");
+    // Scraped and measured populations stay separable in the ledger.
+    assert.strictEqual(rows[0].bundle_tokens, undefined);
+    assert.strictEqual(rows[0].bundle_bytes, undefined);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(fakeTmp, { recursive: true, force: true });
+  }
+});
+
+test("first invocation: an unlisted skill stays ungated, exactly as before (#263 fail-open)", () => {
+  const { out, rows, tmp, fakeTmp } = runManifestGated(gatedCall, null, (manifest) => {
+    // claude-api unlisted -> manifestEntryFor null -> allow.
+    manifest.skills = [];
+  });
+  try {
+    assert.deepStrictEqual(out, {});
+    assert.strictEqual(rows.length, 1);
+    assert.strictEqual(rows[0].gate_first_invocation, undefined);
+    assert.strictEqual(rows[0].gate_action, undefined);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(fakeTmp, { recursive: true, force: true });
+  }
+});
+
+test("first invocation: a SKILL.md-only manifest row never gates (#263)", () => {
+  const { out, tmp, fakeTmp } = runManifestGated(gatedCall, null, (manifest) => {
+    manifest.skills = [{ name: "claude-api", hasTree: false, approxBytes: null, userInvocable: true }];
+  });
+  try {
+    assert.deepStrictEqual(out, {});
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(fakeTmp, { recursive: true, force: true });
+  }
+});
+
 test("a row with no skill name still says unknown", () => {
   // The one case that genuinely cannot be answered: with no skill name
   // there is nothing to match a marker against, so the question was

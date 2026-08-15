@@ -632,23 +632,30 @@ if [ "${TKR_OTHER_LIVE_SESSIONS:-0}" -ge 1 ] 2>/dev/null; then
 fi
 
 # ── Session-size warning ─────────────────────────────────────────────
-# Sourced from TKR_SIZE_TIER (huge|big|normal). Thresholds (250k/500k)
-# live in internal/signals so delegate.sh sees the same bucketing.
+# Sourced from TKR_SIZE_TIER (heaviest|heavy|warn|normal). Thresholds
+# (150k/200k/250k) live in internal/signals so tkr top and delegate.sh see
+# the same bucketing (2026-08-14 recalibration — the prior 250k/500k pair
+# never fired against a real usage sample; see the Go doc comment).
 SIZE_BADGE=""
 case "${TKR_SIZE_TIER:-}" in
-  huge) SIZE_BADGE="HUGE" ;;
-  big)  SIZE_BADGE="BIG"  ;;
+  heaviest) SIZE_BADGE="HUGE!" ;;
+  heavy)    SIZE_BADGE="HUGE"  ;;
+  warn)     SIZE_BADGE="BIG"   ;;
 esac
 
 # ── Session-length warning ───────────────────────────────────────────
 # Turn-count backstop — long sessions accumulate cache_create cost even
-# when compaction keeps ctx% low. Thresholds (50/80 turns) live in
-# internal/signals so mode.AutoSelectFull sees the same bucketing.
+# when compaction keeps ctx% low. Thresholds (75/100/150 turns) live in
+# internal/signals so tkr top and mode.AutoSelectFull see the same
+# bucketing. Recalibrated 2026-08-14 against a real 30-day population
+# (p75/p90/p97) — the prior single 50-turn cutoff flagged 40% of all
+# sessions.
 SESSION_BADGE=""
 SESSION_COLOR="$DIM"
 case "${TKR_SESSION_TIER:-}" in
-  extended) SESSION_BADGE="LONG!"; SESSION_COLOR="$RED"    ;;
-  long)     SESSION_BADGE="LONG";  SESSION_COLOR="$YELLOW" ;;
+  heaviest) SESSION_BADGE="LONG!!"; SESSION_COLOR="$RED"    ;;
+  heavy)    SESSION_BADGE="LONG!";  SESSION_COLOR="$ORANGE" ;;
+  warn)     SESSION_BADGE="LONG";   SESSION_COLOR="$YELLOW" ;;
 esac
 
 # ── Burn anomaly badge (Feature 5) ──────────────────────────────────
@@ -855,11 +862,15 @@ BADGE_COLOR="$ORANGE"
 if [ -n "$PRESSURE_LABEL" ]; then
   BADGE_COLOR="$PRESSURE_COLOR"
 fi
-if [ "$CACHE_BADGE" = "CLIFF" ] || [ "$SIZE_BADGE" = "HUGE" ] || [ "$SESSION_BADGE" = "LONG!" ]; then
+if [ "$CACHE_BADGE" = "CLIFF" ] || [ "$SIZE_BADGE" = "HUGE!" ] || [ "$SESSION_BADGE" = "LONG!!" ]; then
   BADGE_COLOR="$RED"
-elif [ "$CACHE_BADGE" = "COOL" ] || [ "$SIZE_BADGE" = "BIG" ] || [ "$SESSION_BADGE" = "LONG" ]; then
+elif [ "$CACHE_BADGE" = "COOL" ] || [ "$SIZE_BADGE" = "HUGE" ] || [ "$SESSION_BADGE" = "LONG!" ]; then
   if [ "$BADGE_COLOR" != "$RED" ]; then
     BADGE_COLOR="$ORANGE"
+  fi
+elif [ "$SIZE_BADGE" = "BIG" ] || [ "$SESSION_BADGE" = "LONG" ]; then
+  if [ "$BADGE_COLOR" != "$RED" ] && [ "$BADGE_COLOR" != "$ORANGE" ]; then
+    BADGE_COLOR="$YELLOW"
   fi
 fi
 if [ -n "$ANO_BADGE" ] && [ "$BADGE_COLOR" != "$RED" ]; then

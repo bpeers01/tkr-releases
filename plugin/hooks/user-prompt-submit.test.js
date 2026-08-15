@@ -1499,3 +1499,107 @@ test("runMain refreshes effort-<sid>.json every turn from the live env", () => {
     try { fs.rmSync(stateDir, { recursive: true, force: true }); } catch {}
   }
 });
+
+// #278 — recordManualSkillInvocation writes the skill-invoked row directly
+// on the turn that carries CC's <command-name> scaffold, since
+// skill-invoked.js's PreToolUse(Skill) handler structurally never fires
+// for a typed slash command (see hooks/lib/slash-marker.js).
+function readInstructionsLedger(dir) {
+  const fp = path.join(dir, "instructions-load.jsonl");
+  if (!fs.existsSync(fp)) return [];
+  return fs.readFileSync(fp, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => JSON.parse(l));
+}
+
+test("recordManualSkillInvocation writes a manual row for a tagged command", () => {
+  withTempStateDir((dir) => {
+    const { recordManualSkillInvocation } = freshUPSRequire();
+    recordManualSkillInvocation({
+      prompt: "<local-command-caveat>...</local-command-caveat>\n<command-name>/handoff</command-name>\n<command-message>handoff</command-message>",
+      session_id: "sid-manual-1",
+    });
+    const rows = readInstructionsLedger(dir).filter((r) => r.event === "skill-invoked");
+    assert.strictEqual(rows.length, 1);
+    assert.strictEqual(rows[0].skill_name, "handoff");
+    assert.strictEqual(rows[0].invocation_source, "manual");
+    assert.strictEqual(rows[0].session_id, "sid-manual-1");
+  });
+});
+
+test("recordManualSkillInvocation normalizes a plugin-qualified tag", () => {
+  withTempStateDir((dir) => {
+    const { recordManualSkillInvocation } = freshUPSRequire();
+    recordManualSkillInvocation({
+      prompt: "<command-name>/tkr:continue</command-name>",
+      session_id: "sid-manual-2",
+    });
+    const rows = readInstructionsLedger(dir).filter((r) => r.event === "skill-invoked");
+    assert.strictEqual(rows.length, 1);
+    assert.strictEqual(rows[0].skill_name, "continue");
+  });
+});
+
+test("recordManualSkillInvocation writes nothing without a command tag", () => {
+  withTempStateDir((dir) => {
+    const { recordManualSkillInvocation } = freshUPSRequire();
+    recordManualSkillInvocation({ prompt: "summarize the diff", session_id: "sid-manual-3" });
+    assert.deepStrictEqual(readInstructionsLedger(dir), []);
+  });
+});
+
+test("recordManualSkillInvocation honors TKR_SKILL_AUDIT_DISABLED", () => {
+  withTempStateDir((dir) => {
+    const { recordManualSkillInvocation } = freshUPSRequire();
+    const prev = process.env.TKR_SKILL_AUDIT_DISABLED;
+    process.env.TKR_SKILL_AUDIT_DISABLED = "1";
+    try {
+      recordManualSkillInvocation({
+        prompt: "<command-name>/compress</command-name>",
+        session_id: "sid-manual-4",
+      });
+    } finally {
+      if (prev === undefined) delete process.env.TKR_SKILL_AUDIT_DISABLED;
+      else process.env.TKR_SKILL_AUDIT_DISABLED = prev;
+    }
+    assert.deepStrictEqual(readInstructionsLedger(dir), []);
+  });
+});
+
+test("recordManualSkillInvocation honors TKR_HOOKS_DISABLED", () => {
+  withTempStateDir((dir) => {
+    const { recordManualSkillInvocation } = freshUPSRequire();
+    const prev = process.env.TKR_HOOKS_DISABLED;
+    process.env.TKR_HOOKS_DISABLED = "1";
+    try {
+      recordManualSkillInvocation({
+        prompt: "<command-name>/compress</command-name>",
+        session_id: "sid-manual-5",
+      });
+    } finally {
+      if (prev === undefined) delete process.env.TKR_HOOKS_DISABLED;
+      else process.env.TKR_HOOKS_DISABLED = prev;
+    }
+    assert.deepStrictEqual(readInstructionsLedger(dir), []);
+  });
+});
+
+test("recordSlashMarker also writes the manual ledger row (integration)", () => {
+  withTempStateDir((dir) => {
+    const { recordSlashMarker } = freshUPSRequire();
+    recordSlashMarker({
+      prompt: "<command-name>/status</command-name>",
+      session_id: "sid-manual-6",
+      prompt_id: "p1",
+    });
+    // Both the (defense-in-depth) marker file and the direct ledger row
+    // are written from the same call.
+    const markerFiles = fs.readdirSync(dir).filter((f) => f.startsWith("slash-marker-"));
+    assert.strictEqual(markerFiles.length, 1);
+    const rows = readInstructionsLedger(dir).filter((r) => r.event === "skill-invoked");
+    assert.strictEqual(rows.length, 1);
+    assert.strictEqual(rows[0].skill_name, "status");
+    assert.strictEqual(rows[0].invocation_source, "manual");
+  });
+});
