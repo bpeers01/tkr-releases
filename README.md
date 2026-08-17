@@ -9,7 +9,26 @@ It works on four fronts at once: compresses bloated tool output before Claude re
 
 Built for Claude Code on **Pro, Max, or Team**. API users get the same wins paid in dollars instead of cap headroom (`tkr gain --economics`). Binaries ship every release for macOS, Linux, and Windows; automated release-validation smoke testing currently covers Linux and Windows only (see Requirements). Single static binary, zero runtime dependencies.
 
-> **What's new in v5.22.0** — This release closes a set of blind spots
+> **What's new in v5.23.0** — This release closes another batch of
+> instruments that reported a plausible-looking value instead of the
+> truth, without ever looking broken. `tkr git status` could report a
+> clean working tree it hadn't actually verified — a false green light
+> right before commands that destroy uncommitted work — and now fails
+> closed instead, showing you the raw status rather than guessing. The
+> live dashboard's idle-time and stalled-session indicators are accurate
+> again, and a savings-tracking bug that booked credit for compression
+> your terminal host discarded before it ever reached you is fixed. A
+> handful of background notifications that were silently written to a
+> debug log instead of shown to you now actually reach you, or stop
+> firing altogether if they have nothing to say.
+> Separately, `/clear` could hang indefinitely if two specific background
+> hooks got stuck waiting — that's fixed, and both hooks now time out
+> safely. `tkr upgrade` ships: check for and install the latest release
+> in place, with Homebrew-managed installs automatically redirected to
+> `brew upgrade tkr` instead of being overwritten out from under it.
+> [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
+>
+> **v5.22.0** — This release closes a set of blind spots
 > where tkr's own numbers under-reported what actually happened, plus a
 > pricing correction and a batch of Windows and workflow fixes.
 > If you use the Workflow tool to fan out multiple agents, that spend
@@ -307,10 +326,10 @@ Claude Code, Gemini CLI, and Cursor rewrite commands automatically — no manual
 
 ```bash
 # macOS / Linux / Git Bash
-TKR_VERSION=v5.22.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
+TKR_VERSION=v5.23.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.22.0
+irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.23.0
 ```
 
 #### Manual download
