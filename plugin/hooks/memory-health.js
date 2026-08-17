@@ -1,7 +1,14 @@
 #!/usr/bin/env node
 // tkr Stop hook — post-session memory health check.
 // Scans ~/.claude/projects/*/memory/ for dead/oversized/stale files.
-// Silent when clean; prints a one-line summary to stderr when candidates found.
+// Silent when clean; emits a `systemMessage` JSON response when candidates
+// found.
+//
+// #349: the summary used to go to `process.stderr.write` on a hook that
+// exits 0, which reaches the debug log and never the user — so no warning
+// this hook produced was ever seen without `--debug`. It goes out as
+// `systemMessage` now: rendered to the user, never entered into model
+// context (same channel as hooks/session-start.js and hooks/skill-invoked.js).
 //
 // Wave 4 (CR-07): previously this hook used synchronous `fs.readFileSync(0)`
 // for stdin AND walked every project under ~/.claude/projects on every
@@ -11,7 +18,7 @@
 //   - scan is scoped to CLAUDE_PROJECT_DIR when set; full walk only as
 //     opt-in via TKR_MEMORY_HEALTH_FULL_SCAN=1
 //   - whole-hook wall-clock budget enforced; if exceeded the partial
-//     summary still prints to stderr, never blocks the Stop event
+//     summary is still emitted, never blocks the Stop event
 
 const fs = require("fs");
 const path = require("path");
@@ -263,6 +270,49 @@ function auditMemDir(memDir, overBudget, now) {
   };
 }
 
+// formatProjectWarnings renders one project's audit result as user-facing
+// lines. Pure — no I/O, no clock — so the wording is testable without a
+// fake HOME, and so the caller decides where the lines go.
+function formatProjectWarnings(slug, s) {
+  const lines = [];
+  const parts = [];
+  if (s.dead > 0) parts.push(`dead: ${s.dead}`);
+  if (s.oversized > 0) parts.push(`oversized: ${s.oversized}`);
+  if (s.stale > 0) parts.push(`stale: ${s.stale}`);
+  const n = s.dead + s.oversized + s.stale;
+  const short = slug.split("-").slice(-1)[0];
+  if (n > 0) {
+    lines.push(
+      `[memory] ${short}: ${n} candidate${n !== 1 ? "s" : ""} (${parts.join(", ")})`,
+      `  → run: tkr memory audit --project ${slug}`,
+    );
+  }
+  if (s.index && s.index.warn) {
+    lines.push(
+      `[memory] ${short}: MEMORY.md index ${s.index.lines} lines / ${s.index.chars}c — exceeds ${INDEX_LINE_CAP}-line / ${INDEX_CHAR_CAP}c cap (truncated on load)`,
+      `  → consolidate detail-heavy entries into topic files; keep index to one line each`,
+    );
+  }
+  const fmParts = [];
+  if (s.missingFrontmatter > 0) fmParts.push(`missing-frontmatter: ${s.missingFrontmatter}`);
+  if (s.weakDescription > 0) fmParts.push(`weak-description: ${s.weakDescription}`);
+  if (fmParts.length > 0) {
+    lines.push(
+      `[memory] ${short}: ${fmParts.join(", ")} — selector picks memories by description`,
+      `  → add name/description/type frontmatter; descriptions ≥${MIN_DESCRIPTION_LENGTH} chars, specific`,
+    );
+  }
+  if (s.fileCountWarn) {
+    lines.push(
+      `[memory] ${short}: ${s.total} memory files — approaching 200-file cap (older files become invisible to selector)`,
+      `  → consolidate or delete dead memories before scan-cap drops oldest`,
+    );
+  }
+  return lines;
+}
+
+// Returns the warning lines to show the user; empty array when clean or
+// when the scan could not run at all.
 function runHealthScan(deadline) {
   const home = process.env.HOME || process.env.USERPROFILE || "";
   const projectsDir = path.join(home, ".claude", "projects");
@@ -283,7 +333,7 @@ function runHealthScan(deadline) {
       const all = fs.readdirSync(projectsDir);
       projectDirs = all.filter((d) => d.endsWith(base));
     } catch {
-      return;
+      return [];
     }
   } else {
     try {
@@ -291,7 +341,7 @@ function runHealthScan(deadline) {
         try { return fs.statSync(path.join(projectsDir, d)).isDirectory(); } catch { return false; }
       });
     } catch {
-      return;
+      return [];
     }
   }
   // Wall-clock check helper — bail early if past the deadline.
@@ -312,58 +362,33 @@ function runHealthScan(deadline) {
     summaries.push({ slug, ...r });
   }
 
-  if (summaries.length === 0) return;
-
+  const lines = [];
   for (const s of summaries) {
-    const parts = [];
-    if (s.dead > 0) parts.push(`dead: ${s.dead}`);
-    if (s.oversized > 0) parts.push(`oversized: ${s.oversized}`);
-    if (s.stale > 0) parts.push(`stale: ${s.stale}`);
-    const n = s.dead + s.oversized + s.stale;
-    const short = s.slug.split("-").slice(-1)[0];
-    if (n > 0) {
-      process.stderr.write(
-        `[memory] ${short}: ${n} candidate${n !== 1 ? "s" : ""} (${parts.join(", ")})\n` +
-        `  → run: tkr memory audit --project ${s.slug}\n`
-      );
-    }
-    if (s.index && s.index.warn) {
-      process.stderr.write(
-        `[memory] ${short}: MEMORY.md index ${s.index.lines} lines / ${s.index.chars}c — exceeds ${INDEX_LINE_CAP}-line / ${INDEX_CHAR_CAP}c cap (truncated on load)\n` +
-        `  → consolidate detail-heavy entries into topic files; keep index to one line each\n`
-      );
-    }
-    const fmParts = [];
-    if (s.missingFrontmatter > 0) fmParts.push(`missing-frontmatter: ${s.missingFrontmatter}`);
-    if (s.weakDescription > 0) fmParts.push(`weak-description: ${s.weakDescription}`);
-    if (fmParts.length > 0) {
-      process.stderr.write(
-        `[memory] ${short}: ${fmParts.join(", ")} — selector picks memories by description\n` +
-        `  → add name/description/type frontmatter; descriptions ≥${MIN_DESCRIPTION_LENGTH} chars, specific\n`
-      );
-    }
-    if (s.fileCountWarn) {
-      process.stderr.write(
-        `[memory] ${short}: ${s.total} memory files — approaching 200-file cap (older files become invisible to selector)\n` +
-        `  → consolidate or delete dead memories before scan-cap drops oldest\n`
-      );
-    }
+    lines.push(...formatProjectWarnings(s.slug, s));
   }
+  return lines;
 }
 
-// main is the async entrypoint. 500ms wall-clock budget (CR-07). Stop
-// hooks must return fast — they run during session teardown and any
-// delay is visible to the user.
+// main is the entrypoint. 500ms wall-clock budget (CR-07). Stop hooks must
+// return fast — they run during session teardown and any delay is visible
+// to the user.
+//
+// Stdout stays empty when there is nothing to report: a clean scan is the
+// common case and `{}` is what an absent response already means.
 function main() {
   if (hooksDisabled()) return;
   const deadline = Date.now() + 500;
+  let lines = [];
   try {
-    runHealthScan(deadline);
+    lines = runHealthScan(deadline) || [];
   } catch (err) {
     if (process.env.TKR_MEMORY_HEALTH_DEBUG === "1") {
       process.stderr.write(`[memory] scan failed: ${err.message}\n`);
     }
+    return;
   }
+  if (lines.length === 0) return;
+  process.stdout.write(JSON.stringify({ systemMessage: lines.join("\n") }));
 }
 
 if (require.main === module) main();
@@ -371,6 +396,8 @@ if (require.main === module) main();
 module.exports = {
   auditMemDir,
   auditMemIndex,
+  formatProjectWarnings,
+  runHealthScan,
   checkFrontmatter,
   classify,
   parseCreated,

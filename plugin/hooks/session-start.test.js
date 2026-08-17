@@ -1075,6 +1075,151 @@ test("HAND-008: every other path keeps bare-text stdout", () => {
   }
 });
 
+// --- #357: memory nudge routes through systemMessage, not stderr -------
+//
+// Sibling of #349 (already fixed for the Stop hook in memory-health.js).
+// `process.stderr.write` on this exit-0 hook reaches only the debug log —
+// never the transcript, never the user — and the old code burned the 24h
+// dedup regardless, so an undelivered nudge silently suppressed the next
+// day's delivered one too. These pin: (a) a real memory-nudge condition
+// is delivered via `systemMessage`, never stderr; (b) the HAND-008
+// bare-text-stdout contract holds on every source where the nudge's own
+// startup-only gate does not fire; (c) the 24h dedup write never happens
+// for a nudge that was not delivered.
+
+function seedDeadMemoryEntry(home, proj) {
+  const { pathToClaudeSlug } = require("./lib/sessionstart/memory-nudge");
+  const slug = pathToClaudeSlug(proj);
+  const memDir = path.join(home, ".claude", "projects", slug, "memory");
+  fs.mkdirSync(memDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(memDir, "dead-entry.md"),
+    [
+      "---",
+      "name: dead-entry",
+      "description: dead entry seeded for #357 nudge coverage test only",
+      "type: project",
+      "---",
+      "RESOLVED",
+      "",
+    ].join("\n"),
+  );
+}
+
+function runHookForMemoryNudge(source, { seedDeadMemory = true } = {}) {
+  const state = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-ss-357-state-"));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-ss-357-home-"));
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-ss-357-proj-"));
+  if (seedDeadMemory) seedDeadMemoryEntry(home, proj);
+  const env = {
+    ...process.env,
+    TKR_STATE_DIR: state,
+    CLAUDE_PROJECT_DIR: proj,
+    HOME: home,
+    USERPROFILE: home,
+  };
+  delete env.TKR_SYSPROMPT;
+  const res = spawnSync(process.execPath, [HOOK], {
+    input: JSON.stringify({ source, session_id: "test-357-sid" }),
+    env,
+    cwd: proj,
+    encoding: "utf8",
+  });
+  return { res, state, home, proj };
+}
+
+test("#357: startup memory nudge reaches the user via systemMessage, not stderr", () => {
+  const { res, state, home, proj } = runHookForMemoryNudge("startup");
+  try {
+    assert.strictEqual(res.status, 0, `exit ${res.status}: ${res.stderr}`);
+    let parsed;
+    assert.doesNotThrow(() => {
+      parsed = JSON.parse(res.stdout);
+    }, "a delivered memory nudge must emit parseable JSON, not bare text");
+    assert.match(parsed.systemMessage, /\[memory\]/);
+    assert.match(parsed.systemMessage, /dead/);
+    // Never on stderr — stderr on an exit-0 hook reaches only the debug
+    // log (hooks/CLAUDE.md Hook contract), never the user (#349/#357).
+    assert.doesNotMatch(res.stderr || "", /\[memory\]/);
+    // Delivered → dedup state must now exist.
+    const dedupPath = path.join(state, "memory-nudge-state.json");
+    assert.ok(
+      fs.existsSync(dedupPath),
+      "dedup state must be written once the nudge is actually delivered",
+    );
+  } finally {
+    safeRmSync(state);
+    safeRmSync(home);
+    safeRmSync(proj);
+  }
+});
+
+test("#357: HAND-008 bare-text-stdout contract holds on sources where the memory nudge does not fire", () => {
+  // The nudge is startup-only (see session-start.js's `if (source ===
+  // "startup")` block); a dead memory entry exists but "resume" never
+  // reaches loadMemoryNudge, so output must stay bare text and dedup
+  // state must never be written.
+  const { res, state, home, proj } = runHookForMemoryNudge("resume");
+  try {
+    assert.strictEqual(res.status, 0, `exit ${res.status}: ${res.stderr}`);
+    assert.ok(res.stdout.length > 0, "hook emitted nothing");
+    assert.throws(
+      () => JSON.parse(res.stdout),
+      "resume source must stay bare text — memory nudge is startup-only",
+    );
+    const dedupPath = path.join(state, "memory-nudge-state.json");
+    assert.ok(
+      !fs.existsSync(dedupPath),
+      "dedup state must not be written when the nudge never ran",
+    );
+  } finally {
+    safeRmSync(state);
+    safeRmSync(home);
+    safeRmSync(proj);
+  }
+});
+
+test("#357: loadMemoryNudge never writes the 24h dedup state itself (ordering invariant)", () => {
+  const state = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-357-unit-state-"));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-357-unit-home-"));
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-357-unit-proj-"));
+  const prevState = process.env.TKR_STATE_DIR;
+  const prevHome = process.env.HOME;
+  const prevUserProfile = process.env.USERPROFILE;
+  try {
+    seedDeadMemoryEntry(home, proj);
+    process.env.TKR_STATE_DIR = state;
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+
+    const memoryNudge = require("./lib/sessionstart/memory-nudge");
+    const msg = memoryNudge.loadMemoryNudge(proj);
+    assert.match(
+      msg,
+      /\[memory\]/,
+      "expected a built nudge message from the seeded dead entry",
+    );
+
+    const dedupPath = path.join(state, "memory-nudge-state.json");
+    assert.ok(
+      !fs.existsSync(dedupPath),
+      "loadMemoryNudge must only BUILD the message — recording the dedup " +
+        "state is the caller's job (session-start.js), done only after the " +
+        "message is actually plumbed into a channel that reaches the user",
+    );
+  } finally {
+    if (prevState === undefined) delete process.env.TKR_STATE_DIR;
+    else process.env.TKR_STATE_DIR = prevState;
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    if (prevUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = prevUserProfile;
+    safeRmSync(state);
+    safeRmSync(home);
+    safeRmSync(proj);
+  }
+});
+
 // #263 follow-up e2e — session-start.js wires refreshSkillManifestIfStale
 // into the startup path. With no skill-manifest.json in TKR_STATE_DIR the
 // manifest is stale, so a detached rescrape must fire. The real assertion

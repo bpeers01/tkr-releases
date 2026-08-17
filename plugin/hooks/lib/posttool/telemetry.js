@@ -36,15 +36,46 @@ function clampCounterfactual(n) {
   return cap > 0 && n > cap ? cap : n;
 }
 
+// hostOutputCapBytes is the counterfactual cap layered with
+// BASH_MAX_OUTPUT_LENGTH — Claude Code's own env var for the host's
+// actual configured Bash-result truncation threshold (#337 P0-1).
+// TKR_COUNTERFACTUAL_CAP_BYTES still wins outright when set (explicit
+// override, tests); absent that, the host's real configured value beats
+// the hardcoded default whenever the two diverge. Mirrors
+// internal/util.HostOutputCapBytes — MUST match.
+function hostOutputCapBytes() {
+  const override = process.env.TKR_COUNTERFACTUAL_CAP_BYTES;
+  if (override !== undefined && override !== "") {
+    const parsed = Number(override);
+    if (Number.isInteger(parsed) && parsed >= 0) return parsed;
+  }
+  const hostCap = Number(process.env.BASH_MAX_OUTPUT_LENGTH);
+  if (Number.isInteger(hostCap) && hostCap > 0) return hostCap;
+  return COUNTERFACTUAL_CAP_BYTES;
+}
+
 // Record a telemetry event to the JSONL history file.
 // Appending a single short line is atomic on all platforms (well under 4KB).
+//
+// #337 P0-1: the host's truncate-to-file-and-preview behavior fires off
+// bytesBefore (the RAW size) alone, before a filtered replacement is
+// ever considered — above hostOutputCapBytes(), the replacement is
+// discarded outright and the model sees the host's own treatment
+// whether or not tkr ran. No real saving occurred in that case, and
+// bytesAfter plays no part in that fact: clamping it too (the previous
+// symmetric clamp) still booked a positive `cap - bytesAfter` saving for
+// an event that never happened.
 function recordTelemetry(stream, bytesBefore, bytesAfter, detail) {
   try {
-    const saved = Math.max(
-      0,
-      clampCounterfactual(bytesBefore) - clampCounterfactual(bytesAfter),
-    );
-    if (saved === 0) return;
+    const cap = hostOutputCapBytes();
+    const hostCapExceeded = cap > 0 && bytesBefore > cap;
+    const saved = hostCapExceeded
+      ? 0
+      : Math.max(0, bytesBefore - bytesAfter);
+    // Forced past the zero-saving skip when the host cap explains the
+    // zero: that case is diagnostically interesting (compression ran and
+    // was thrown away) rather than "nothing happened here".
+    if (saved === 0 && !hostCapExceeded) return;
     const entry = {
       stream: stream,
       bytes_saved: saved,
@@ -52,6 +83,7 @@ function recordTelemetry(stream, bytesBefore, bytesAfter, detail) {
       detail: detail.substring(0, 80),
       timestamp: new Date().toISOString(),
     };
+    if (hostCapExceeded) entry.reason = "host_cap_exceeded";
     const dir = stateDir();
     const historyPath = path.join(dir, "telemetry-history.jsonl");
     fs.mkdirSync(dir, { recursive: true });
@@ -62,4 +94,9 @@ function recordTelemetry(stream, bytesBefore, bytesAfter, detail) {
   }
 }
 
-module.exports = { recordTelemetry, clampCounterfactual, TELEMETRY_MAX_BYTES };
+module.exports = {
+  recordTelemetry,
+  clampCounterfactual,
+  hostOutputCapBytes,
+  TELEMETRY_MAX_BYTES,
+};

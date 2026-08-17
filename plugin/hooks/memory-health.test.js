@@ -13,6 +13,7 @@ const path = require("node:path");
 const {
   auditMemDir,
   auditMemIndex,
+  formatProjectWarnings,
   checkFrontmatter,
   classify,
   parseCreated,
@@ -455,5 +456,100 @@ test("auditMemDir counts provenance-classed stale files", () => {
     assert.strictEqual(r.total, 2);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- #349: warnings reach the user via systemMessage, not stderr ---------
+//
+// Every warning this hook produces used to go to process.stderr.write on a
+// hook that exits 0. Per the Claude Code hook contract that reaches the
+// debug log and never the transcript, so no memory-health warning was ever
+// visible to a user without --debug. These pin the output channel.
+
+const { spawnSync } = require("node:child_process");
+const HOOK = path.join(__dirname, "memory-health.js");
+
+function cleanResult(over) {
+  return {
+    dead: 0, oversized: 0, stale: 0, total: 3,
+    missingFrontmatter: 0, weakDescription: 0, fileCountWarn: false,
+    index: { lines: 10, chars: 400, warn: false },
+    ...over,
+  };
+}
+
+test("#349: formatProjectWarnings renders candidates and the audit command", () => {
+  const lines = formatProjectWarnings(
+    "C--Users-x-Projects-tkr",
+    cleanResult({ dead: 2, stale: 1 }),
+  );
+  assert.strictEqual(lines.length, 2);
+  assert.match(lines[0], /^\[memory\] tkr: 3 candidates \(dead: 2, stale: 1\)$/);
+  assert.match(lines[1], /tkr memory audit --project C--Users-x-Projects-tkr/);
+});
+
+test("#349: formatProjectWarnings is empty for a clean project", () => {
+  assert.deepStrictEqual(formatProjectWarnings("slug-tkr", cleanResult()), []);
+});
+
+function runHook(home) {
+  const env = { ...process.env, HOME: home, USERPROFILE: home };
+  // Full scan so the fake HOME's single project is reached without having
+  // to reproduce Claude Code's cwd→slug encoding.
+  env.TKR_MEMORY_HEALTH_FULL_SCAN = "1";
+  delete env.TKR_HOOKS_DISABLED;
+  return spawnSync(process.execPath, [HOOK], {
+    input: JSON.stringify({ session_id: "mh-349" }),
+    encoding: "utf8",
+    env,
+  });
+}
+
+function mkFakeHome(files) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-mh-349-"));
+  const memDir = path.join(home, ".claude", "projects", "tkr-test-proj", "memory");
+  fs.mkdirSync(memDir, { recursive: true });
+  for (const [name, content] of Object.entries(files)) {
+    fs.writeFileSync(path.join(memDir, name), content);
+  }
+  return home;
+}
+
+const GOOD_FM = {
+  name: "entry",
+  description: "Specific enough description to be useful",
+  type: "project",
+};
+
+test("#349: a dirty scan emits JSON with a systemMessage, not stderr", () => {
+  const home = mkFakeHome({
+    "dead.md": fm(GOOD_FM).replace("body content here.", "Phase 3 is complete."),
+  });
+  try {
+    const res = runHook(home);
+    assert.strictEqual(res.status, 0);
+    let parsed;
+    assert.doesNotThrow(() => {
+      parsed = JSON.parse(res.stdout);
+    }, `stdout must be parseable JSON, got: ${JSON.stringify(res.stdout)}`);
+    assert.match(parsed.systemMessage, /\[memory\] proj: 1 candidate \(dead: 1\)/);
+    assert.match(parsed.systemMessage, /tkr memory audit --project tkr-test-proj/);
+    // The defect being fixed: the warning must not be on the channel that
+    // exit-0 discards.
+    assert.doesNotMatch(res.stderr || "", /\[memory\]/);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("#349: a clean scan writes nothing at all", () => {
+  const home = mkFakeHome({ "good.md": fm(GOOD_FM) });
+  try {
+    const res = runHook(home);
+    assert.strictEqual(res.status, 0);
+    assert.strictEqual(res.stdout, "");
+    assert.strictEqual(res.stderr, "");
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
   }
 });

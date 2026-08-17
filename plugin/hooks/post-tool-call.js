@@ -54,7 +54,7 @@ const {
   SESSION_INGEST_MIN_BYTES,
 } = require("./lib/posttool/session-ingest");
 const { makeResponse } = require("./lib/posttool/response");
-const { recordTelemetry } = require("./lib/posttool/telemetry");
+const { recordTelemetry, hostOutputCapBytes } = require("./lib/posttool/telemetry");
 const {
   writeLastActivity,
   spawnSessionRecord,
@@ -317,6 +317,18 @@ async function processEvent(event) {
 
   // Skip empty output — still reinforce brevity
   if (!stdout || stdout.length < 100) {
+    return brevityResponse(composedCtx);
+  }
+
+  // #337 P0-1: above the host's real output cap, Claude Code writes the
+  // raw output to a file, previews the first ~2KB, and discards
+  // whatever this hook returns — filtering (or the search clean-up path
+  // below) is wasted work for output the model will never see either
+  // way. Matches Omni's behavioral gate (post_tool.rs:326-355). The
+  // wrong-counterfactual half of this bug is fixed independently in
+  // recordTelemetry, which still guards any other caller that reaches
+  // it without this gate.
+  if (stdout.length > hostOutputCapBytes()) {
     return brevityResponse(composedCtx);
   }
 

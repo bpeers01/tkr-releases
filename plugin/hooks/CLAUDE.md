@@ -13,9 +13,9 @@ InstructionsLoaded).
 | `post-tool-call.js` | PostToolUse | Compress Bash output via TOML filter pipeline; on Agent/Task events also append one agent-completion row (#134 R0.1, `lib/agent-completions.js`); on AskUserQuestion/ExitPlanMode events perform the keepalive interactive-answer touch (`lib/keepalive-activity.js` `interactiveAnswerTouch`, issue #152 item 2). The touch lives here rather than in a matched `PostToolUse(AskUserQuestion\|ExitPlanMode)` entry because this is the plugin's UNMATCHED PostToolUse entry — it already receives the event, so a matched entry would only add a second node spawn and an edit to the prefix-cache-critical `plugin.json`. Cost on every other tool call is one `Set.has()` |
 | `post-tool-batch.js` | PostToolBatch | One first-batch row per prompt classifying the coordinator's first successful action (#134 R0.2). Event exists on CC ≥2.1.x (verified against the 2.1.221 binary; payload `tool_calls`); older builds never fire it and the read side must report that as "unavailable", never as inactivity |
 | `cli-corrections-injector.js` | PostToolUse(Bash) | Inject cli-corrections on Bash failure (PD-7) |
-| `session-start.js` | SessionStart | Brevity reinforcement + tkr awareness banner |
+| `session-start.js` | SessionStart | Brevity reinforcement + tkr awareness banner; on `startup`/`resume` also warms the opt-in resident runtime (#287, `lib/sessionstart/resident-warm.js`) so the first eligible Bash call is served rather than paying the fallback and starting the runtime for the call after it. Non-blocking and a no-op on every install that has not set `TKR_RESIDENT_ENABLED=1`. On `startup` also builds the INV-016 memory-health nudge (`lib/sessionstart/memory-nudge.js`); like `memory-health.js` below (#349), it goes out as `systemMessage` — not `process.stderr.write` — and (#357) the 24h dedup write is ordered to fire only once the message is actually assembled into that channel, so it can never record a nudge nobody saw |
 | `pre-compact.js` | PreCompact | Snapshot session + nudge `/clear` over `/compact` |
-| `memory-health.js` | Stop | Memory file rotation, dedup, staleness check |
+| `memory-health.js` | Stop | Memory file rotation, dedup, staleness check. Warnings go out as `systemMessage` on stdout, silent stdout when clean (#349) — they were `process.stderr.write` on a hook that exits 0 until then, which per the Stderr rule below is the debug log only, so no warning this hook produced had ever been seen by a user without `--debug`. `formatProjectWarnings()` is pure and holds the wording; only `main()` writes |
 | `user-prompt-submit.js` | UserPromptSubmit | Reinforce brevity mode on every prompt; keepalive activity touch (`lib/keepalive-activity.js`, folded in from the former bash `activity-touch.sh` — issue #129); writes the `skill-invoked` ledger's manual rows directly (`recordManualSkillInvocation`, #278) — see the `skill-invoked.js` row below for why this hook, not that one, is where they get written |
 | `instructions-loaded.js` | InstructionsLoaded | Telemetry to `~/.tkr/instructions-load.jsonl` |
 | `cache-bust-warn.js` | PreToolUse(Edit\|Write) | Warn before editing prefix-cache-critical files (PlaybookV2 L5) |
@@ -45,7 +45,13 @@ InstructionsLoaded).
   Live-verified on native Read with Claude Code 2.1.232: a shape-matched
   object replaced both the model-visible result and persisted transcript;
   a bare replacement string was accepted by the hook runner but ignored.
-- **Stderr** — debug only; never relied on for control flow.
+- **Stderr** — debug only; never relied on for control flow. On a hook that
+  exits 0 it reaches the debug log and nothing else — not the transcript,
+  not the user. Anything a human is meant to READ goes out as
+  `systemMessage` on stdout (rendered to the user, never entered into model
+  context); anything the MODEL is meant to read goes out as
+  `additionalContext`. A warning written to stderr is a warning nobody
+  receives (#349).
 - **Exit code** — non-zero treated as failure; hook silently skipped.
   Don't use exit codes for decisions.
 - **PostToolUse receives the ORIGINAL tool input, not a PreToolUse
@@ -368,14 +374,27 @@ Convention: `~/.tkr/<feature>.{json,jsonl}` (honor `TKR_STATE_DIR` env):
   those two ever disagree the feature silently never engages, so the
   parity is tested rather than assumed. `.json` is the `0600` endpoint
   file (address, token, and the binary's size+mtime — the upgrade guard);
-  `.sock` the Unix socket (Windows uses a loopback TCP port instead, and
-  is UNVALIDATED); `.start` an mtime-only marker rate-limiting lazy
-  starts to one per 5s so a crash-looping runtime cannot become an extra
-  spawn per Bash call; `.cooldown` an epoch-ms deadline written after a
-  request timeout so a hung runtime costs one deadline, not one per call.
+  `.sock` the Unix socket (Windows uses a named pipe,
+  `\\.\pipe\tkr-resident-<key>`, with a DACL granting only the current
+  user, LocalSystem and administrators); `.start` an mtime-only marker
+  rate-limiting starts to one per 5s so a crash-looping runtime cannot
+  become an extra spawn per Bash call; `.cooldown` an epoch-ms deadline
+  written after a request timeout so a hung runtime costs one deadline,
+  not one per call.
   Every failure to use the runtime falls back to spawning `tkr` exactly
   as before. Off unless `TKR_RESIDENT_ENABLED=1`; `TKR_RESIDENT_DISABLED=1`
-  wins over it. When reading the endpoint from Node, stat with
+  wins over it. **Two starting points, one mechanism** (#287): the request
+  path starts a runtime lazily on the first call that finds none, and
+  `session-start.js` calls `resident-client.warm()` on `startup`/`resume`
+  so that first call finds one already up. `warm()` reaches the SAME
+  `maybeStart()` through the same gates — it changes when a start happens,
+  never whether the rules apply — and it never blocks: no connect, no ping,
+  detached + `unref()`'d spawn, a verdict for every input and a throw for
+  none. Its one extra check is a `signal 0` liveness probe of the
+  endpoint's pid, because a crashed runtime leaves a valid endpoint file
+  behind and warm-up would otherwise guarantee the first Bash call hits a
+  corpse; the request path needs no such probe since its connect answers
+  the same question. When reading the endpoint from Node, stat with
   `{bigint: true}` — the float `mtimeMs` carries sub-ms precision that
   Go's `UnixMilli()` truncates, and a plain `===` rejects every endpoint.
 - `rewrite-heads.json` — rewrite-eligibility heads manifest (HOOK-003).

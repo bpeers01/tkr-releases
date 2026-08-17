@@ -105,6 +105,45 @@ test("TKR_BIN override reaches the spawned command", () => {
   }
 });
 
+// #356: the Go binary's one-shot guarantee (marks itself fired before it
+// prints — cmd_gain_suggest.go) was undone by the JS cache in front of it,
+// which replayed the SAME positive line to every session that started
+// within the 6h TTL. A second cache read must see the verdict as already
+// consumed, not as a value to hand out again.
+test("a positive verdict is injected once, not replayed from a fresh cache read", () => {
+  const state = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-gn-ttl-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-shim2-"));
+  const shim = path.join(dir, "shim.js");
+  const line = "tkr: suggest mode saw evidence — switch on rewriting";
+  fs.writeFileSync(shim, `process.stdout.write(${JSON.stringify(line)});\n`);
+  const prevBin = process.env.TKR_BIN;
+  const prevState = process.env.TKR_STATE_DIR;
+  const prevNoGrad = process.env.TKR_SUGGEST_NO_GRADUATION;
+  delete process.env.TKR_SUGGEST_NO_GRADUATION;
+  try {
+    process.env.TKR_BIN = shim;
+    process.env.TKR_STATE_DIR = state;
+    const first = loadGraduationNudge();
+    assert.ok(
+      first.includes(line),
+      `expected shim output on first call, got: ${JSON.stringify(first)}`,
+    );
+    // Second call within the TTL must read the cache — and the cache must
+    // now hold the CONSUMED marker, not the line just handed out, even
+    // though the shim would happily print it again if re-spawned.
+    const second = loadGraduationNudge();
+    assert.strictEqual(second, "", `expected empty on replay, got: ${JSON.stringify(second)}`);
+  } finally {
+    if (prevBin === undefined) delete process.env.TKR_BIN;
+    else process.env.TKR_BIN = prevBin;
+    if (prevState === undefined) delete process.env.TKR_STATE_DIR;
+    else process.env.TKR_STATE_DIR = prevState;
+    if (prevNoGrad !== undefined) process.env.TKR_SUGGEST_NO_GRADUATION = prevNoGrad;
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(state, { recursive: true, force: true });
+  }
+});
+
 test("MAX_LINE bounds what can enter the session prefix", () => {
   assert.ok(typeof MAX_LINE === "number" && MAX_LINE > 0 && MAX_LINE <= 1000);
 });

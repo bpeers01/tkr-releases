@@ -1,6 +1,6 @@
 {
   "name": "tkr",
-  "version": "5.22.0",
+  "version": "5.23.0",
   "description": "Token Reducer \u2014 unified token efficiency plugin for Claude Code. Tool output compression, semantic search, capacity-aware delegation, and output brevity.",
   "author": {
     "name": "Brantley Peers"
@@ -140,11 +140,15 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/memory-health.js"
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/memory-health.js",
+            "asyncRewake": true,
+            "timeout": 30
           },
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/session-summary.js"
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/session-summary.js",
+            "asyncRewake": true,
+            "timeout": 30
           },
           {
             "type": "command",

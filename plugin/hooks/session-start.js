@@ -3,7 +3,7 @@
 //
 // Responsibility-aligned modules live under hooks/lib/sessionstart/:
 //   brevity              — getBrevityMode + writeBrevityFlag + loadBrevitySection
-//   memory-nudge         — INV-016 pre-turn-1 stderr nudge (24h dedup)
+//   memory-nudge         — INV-016 pre-turn-1 nudge, systemMessage (24h dedup)
 //   planning-nudge       — capability hint for plan-mode/blueprint planners
 //   cache-mechanics-nudge — FROZEN proposal §5 Q4 prefix-cache framework
 //   read-nudge           — LCTX-001 tkr_read map/signatures hint
@@ -34,7 +34,7 @@ const {
   writeBrevityFlag,
   loadBrevitySection,
 } = require("./lib/sessionstart/brevity");
-const { emitMemoryNudge } = require("./lib/sessionstart/memory-nudge");
+const { loadMemoryNudge, recordMemoryNudge } = require("./lib/sessionstart/memory-nudge");
 const { loadPlanningNudge } = require("./lib/sessionstart/planning-nudge");
 const {
   loadCacheMechanicsNudge,
@@ -47,23 +47,6 @@ const {
   loadPinnedBudgetWarning,
 } = require("./lib/sessionstart/budget-warning");
 const { loadContinue } = require("./lib/sessionstart/continue");
-const { logSessionEffort, persistSessionEffort } = require("./lib/sessionstart/effort-log");
-const { loadSnapshotXML } = require("./lib/sessionstart/snapshot");
-const {
-  spawnCleanupOld,
-  spawnCaptureRules,
-  spawnKeepalivePrune,
-} = require("./lib/sessionstart/sideeffects");
-const {
-  sweepStaleStatuslineFiles,
-} = require("./lib/sessionstart/statusline-sweep");
-const {
-  sweepStaleModeFiles,
-  spawnModeAuto,
-} = require("./lib/sessionstart/mode-bootstrap");
-const { performTTLInference } = require("./lib/sessionstart/cache-ttl-inference");
-const { sweepStaleWorkFiles } = require("./lib/work-route-state");
-const { sweepStaleFirstBatchMarkers } = require("./post-tool-batch.js");
 const {
   shouldFireSearchRefresh,
   countRecentRefreshTimeouts,
@@ -71,10 +54,6 @@ const {
   REFRESH_STRIKE_LIMIT,
   REFRESH_STRIKE_WINDOW_MS,
 } = require("./lib/sessionstart/search-refresh");
-const {
-  INJECTION_THRESHOLD_DEFAULTS,
-  loadInjectionThresholds,
-} = require("./lib/injection-config");
 const {
   buildSubdirZoneSection,
 } = require("./lib/sessionstart/subdir-zone");
@@ -84,9 +63,31 @@ const {
 const {
   appendVersionLedger,
 } = require("./lib/sessionstart/version-ledger");
-const {
-  refreshSkillManifestIfStale,
-} = require("./lib/sessionstart/skill-manifest-refresh");
+
+// The modules below are required LAZILY (at point of use) because each is
+// only reached on a conditional code path (a specific `source` value, or
+// the test-export branch), never on every SessionStart invocation. All were
+// inspected for import-time side effects (file writes, env mutation,
+// spawns, handler registration) before being made lazy — each defines only
+// functions/constants at module scope and module.exports at the bottom; see
+// commit for the per-module note. In-process measurement
+// (`node -e` timing `process.hrtime.bigint()` around each require) showed
+// the FULL eager require graph costs ~24-26ms total on this box, not the
+// ~450ms this task was scoped against — see commit message for the full
+// breakdown. Lazy-loading is still correct/lower-risk even though the
+// absolute saving is small.
+//   ./lib/sessionstart/effort-log            — logSessionEffort/persistSessionEffort, startup|resume|compact only
+//   ./lib/sessionstart/snapshot              — loadSnapshotXML, compact|resume only
+//   ./lib/sessionstart/sideeffects           — spawnCleanupOld/spawnCaptureRules/spawnKeepalivePrune, startup|resume|compact / startup only
+//   ./lib/sessionstart/statusline-sweep      — sweepStaleStatuslineFiles, startup|resume|compact only
+//   ./lib/sessionstart/mode-bootstrap        — sweepStaleModeFiles/spawnModeAuto, startup|resume|compact / startup only
+//   ./lib/sessionstart/cache-ttl-inference   — performTTLInference, startup only
+//   ./lib/work-route-state                   — sweepStaleWorkFiles, startup|resume|compact only
+//   ./post-tool-batch.js                     — sweepStaleFirstBatchMarkers, startup|resume|compact only
+//   ./lib/sessionstart/skill-manifest-refresh — refreshSkillManifestIfStale, startup only
+//   ./lib/sessionstart/resident-warm         — warmResidentRuntime, startup|resume only
+//   ./lib/injection-config                   — loadInjectionThresholds/INJECTION_THRESHOLD_DEFAULTS,
+//                                               used only in the test-export branch (require.main !== module)
 
 const extractSessionID = getSessionID;
 
@@ -129,7 +130,13 @@ function buildCoreGuidance(sid, projectPath, source, out) {
   const continueResult = loadContinue(sid, projectPath, source);
   const resumeAdvisory = continueResult.context;
   if (out && continueResult.systemMessage) {
-    out.systemMessage = continueResult.systemMessage;
+    // Append rather than overwrite — `out` may already carry a
+    // systemMessage from an earlier caller (e.g. the #357 memory nudge,
+    // startup-only) even though today's source gating keeps the two
+    // mutually exclusive in practice.
+    out.systemMessage = out.systemMessage
+      ? `${out.systemMessage}\n${continueResult.systemMessage}`
+      : continueResult.systemMessage;
   }
   const planningNudge = loadPlanningNudge();
   const cacheMechanicsNudge = loadCacheMechanicsNudge();
@@ -194,6 +201,10 @@ function buildCoreGuidance(sid, projectPath, source, out) {
 // Module exports for unit tests. Guarded so importing the hook from a
 // test doesn't kick off the stdin read.
 if (require.main !== module) {
+  const {
+    INJECTION_THRESHOLD_DEFAULTS,
+    loadInjectionThresholds,
+  } = require("./lib/injection-config");
   module.exports = {
     shouldFireSearchRefresh,
     countRecentRefreshTimeouts,
@@ -241,6 +252,7 @@ function runMain(inputRaw) {
   if (source === "compact" || source === "resume") {
     // Load saved snapshot and prepend to guidance so the model sees
     // prior session context immediately after compact.
+    const { loadSnapshotXML } = require("./lib/sessionstart/snapshot");
     const xml = loadSnapshotXML(sid);
     if (xml) {
       snapshotPrefix = xml + "\n\n";
@@ -248,9 +260,17 @@ function runMain(inputRaw) {
   }
 
   const projectPath = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  // HAND-008 output collector, declared here (rather than just before the
+  // stdout write) so the startup-only memory nudge below can plumb its
+  // message into the same `systemMessage` channel buildCoreGuidance uses.
+  const out = {};
   // L-07: cleanup runs on startup AND on resume/compact (was startup-only).
   // Long sessions that resume from /compact never pruned otherwise.
   if (source === "startup" || source === "resume" || source === "compact") {
+    const {
+      spawnCleanupOld,
+      spawnKeepalivePrune,
+    } = require("./lib/sessionstart/sideeffects");
     // Fire-and-forget: prune >7-day session rows from SQLite.
     spawnCleanupOld(projectPath);
     // INV-085 adjacent finding: ~/.tkr/keepalive/<sid>/ dirs from crashed
@@ -261,22 +281,37 @@ function runMain(inputRaw) {
     // Best-effort: prune leftover per-session statusline payloads from
     // crashed sessions where Stop never ran. Sync local-fs scan, bounded
     // by tmpdir entry count — runs in <5ms typical.
-    try { sweepStaleStatuslineFiles(); } catch {}
+    try {
+      const { sweepStaleStatuslineFiles } = require("./lib/sessionstart/statusline-sweep");
+      sweepStaleStatuslineFiles();
+    } catch {}
     // PLAN-33: same policy for per-session mode-<sid>.json under ~/.tkr/.
     // Crashed sessions leave these behind; without sweep the dir grows
     // unbounded over the project lifetime.
-    try { sweepStaleModeFiles(); } catch {}
+    try {
+      const { sweepStaleModeFiles } = require("./lib/sessionstart/mode-bootstrap");
+      sweepStaleModeFiles();
+    } catch {}
     // Same 24h policy for work-routing receipts and per-plan claims.
     // Claims are one file per plan actually acted on, so an assisted
     // session accumulates them slowly but without bound.
-    try { sweepStaleWorkFiles(); } catch {}
+    try {
+      const { sweepStaleWorkFiles } = require("./lib/work-route-state");
+      sweepStaleWorkFiles();
+    } catch {}
     // Same 24h policy for first-batch-<sid>.json dedup markers
     // (#134 R0.2) — one per session id, crashed sessions never clean up.
-    try { sweepStaleFirstBatchMarkers(); } catch {}
+    try {
+      const { sweepStaleFirstBatchMarkers } = require("./post-tool-batch.js");
+      sweepStaleFirstBatchMarkers();
+    } catch {}
     // Forward-looking effort telemetry — JSONL records don't carry
     // effort, so SessionStart is the earliest capture point. Append
     // one row to ~/.tkr/session-effort.jsonl per session-start event.
-    try { logSessionEffort(sid, input); } catch {}
+    try {
+      const { logSessionEffort } = require("./lib/sessionstart/effort-log");
+      logSessionEffort(sid, input);
+    } catch {}
     // Persist the same detection to effort-<sid>.json so the shape
     // nudge in user-prompt-submit can read active effort when the
     // effort env vars are absent from its own environment. Session
@@ -284,27 +319,77 @@ function runMain(inputRaw) {
     // nothing — but a launch boundary is the one place where "nothing
     // detected" legitimately clears a snapshot left by a prior launch
     // of this sid.
-    try { persistSessionEffort(sid, input, process.env, { clearWhenAbsent: true }); } catch {}
+    try {
+      const { persistSessionEffort } = require("./lib/sessionstart/effort-log");
+      persistSessionEffort(sid, input, process.env, { clearWhenAbsent: true });
+    } catch {}
+  }
+  // #287: warm the opt-in resident runtime (#209) so the FIRST eligible Bash
+  // call of the session is served by it rather than paying the fresh-process
+  // fallback and starting the runtime for the call after it.
+  //
+  // Runs on startup AND resume, not compact. Startup is the obvious case;
+  // resume is a session that has been away long enough to plausibly have
+  // crossed the runtime's 30m idle shutdown, and it is followed by real Bash
+  // traffic just like a startup. Compact happens mid-session where a runtime
+  // is either already up (warm() reads one file and two stats, then returns
+  // already_warm) or was suppressed for a reason that still holds — so the
+  // call would be a near-no-op and is skipped rather than dressed up as one.
+  //
+  // Placed with the other fire-and-forget work, BEFORE the stdout write: the
+  // spawn is detached and unref'd, so the head start it buys the runtime is
+  // worth more than the sub-millisecond it delays the guidance this process
+  // is about to print and exit on. It is a no-op on every install that has
+  // not opted in, which is currently all of them.
+  if (source === "startup" || source === "resume") {
+    try {
+      const { warmResidentRuntime } = require("./lib/sessionstart/resident-warm");
+      warmResidentRuntime({ cwd: projectPath });
+    } catch {}
   }
   if (source === "startup") {
     // Fire-and-forget: capture CLAUDE.md paths so they survive /compact (PLAN-6).
+    const { spawnCaptureRules } = require("./lib/sessionstart/sideeffects");
     spawnCaptureRules(sid, projectPath);
-    // INV-016: pre-turn-1 memory-health nudge (stderr, one line, 24h dedup).
-    try { emitMemoryNudge(projectPath); } catch {}
+    // INV-016 / #357: pre-turn-1 memory-health nudge, one line, 24h dedup.
+    // Routed into `out.systemMessage` (HAND-008's user-facing channel),
+    // never stderr — stderr on an exit-0 hook reaches only the debug log
+    // (hooks/CLAUDE.md Hook contract). recordMemoryNudge() (the 24h dedup
+    // write) fires ONLY here, immediately after the message is actually
+    // assembled into `out.systemMessage`, so the dedup state can never
+    // record a nudge that was never delivered.
+    try {
+      const nudgeMsg = loadMemoryNudge(projectPath);
+      if (nudgeMsg) {
+        out.systemMessage = out.systemMessage
+          ? `${out.systemMessage}\n${nudgeMsg}`
+          : nudgeMsg;
+        recordMemoryNudge();
+      }
+    } catch {}
     // PLAN-1 T7 (Wave-0, v3.13.1): infer prompt-cache TTL once per session
     // start and append L6 to the playbook ledger when evidence is present.
     // Sibling hooks (cache-bust-warn / push-clear-nudge / pre-compact) call
     // detectTTL independently; the persisted inference from this call
     // makes those calls near-free.
-    try { performTTLInference(sid); } catch {}
+    try {
+      const { performTTLInference } = require("./lib/sessionstart/cache-ttl-inference");
+      performTTLInference(sid);
+    } catch {}
     // PLAN-33: refresh per-session mode-<sid>.json from live pressure so
     // the statusline never paints a leftover badge from a prior session.
     // Fire-and-forget; binary writes via TickAuto in <100ms.
-    try { spawnModeAuto(sid, spawnBounded); } catch {}
+    try {
+      const { spawnModeAuto } = require("./lib/sessionstart/mode-bootstrap");
+      spawnModeAuto(sid, spawnBounded);
+    } catch {}
     // #263 follow-up: keep skill-manifest.json current so the first-
     // invocation gate doesn't go permanently blind after a CLI upgrade.
     // Cheap staleness check; detached rescrape only when stale.
-    try { refreshSkillManifestIfStale(); } catch {}
+    try {
+      const { refreshSkillManifestIfStale } = require("./lib/sessionstart/skill-manifest-refresh");
+      refreshSkillManifestIfStale();
+    } catch {}
   }
 
   // HAND-008: two output formats, deliberately. Plain stdout is what this
@@ -315,8 +400,9 @@ function runMain(inputRaw) {
   // JSON — the one carrying a user-facing `systemMessage` — takes it. It
   // fires on a handful of sessions, which keeps the blast radius of a wrong
   // guess to those, and makes them the experiment that would justify
-  // migrating the rest.
-  const out = {};
+  // migrating the rest. `out` was declared earlier in this function (see
+  // the #357 memory-nudge block above) so that startup-only source can
+  // feed this same channel.
   const guidance = snapshotPrefix + buildCoreGuidance(sid, projectPath, source, out);
   if (out.systemMessage) {
     process.stdout.write(

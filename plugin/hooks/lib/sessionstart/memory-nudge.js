@@ -1,8 +1,19 @@
 // INV-016: SessionStart memory-health nudge.
-// Classify project memory dir pre-turn-1 and emit a one-line stderr notice
-// when dead/oversized/stale candidates (or an oversized index) exist.
+// Classify project memory dir pre-turn-1 and build a one-line notice when
+// dead/oversized/stale candidates (or an oversized index) exist.
 // Gated by cfg.memory.session_start_nudge (default on); deduped 24h via
 // $TKR_STATE_DIR/memory-nudge-state.json.
+//
+// #357 (sibling of #349): this used to go out via `process.stderr.write`
+// on a hook that exits 0, which reaches only the debug log — never the
+// transcript, never the user (see hooks/CLAUDE.md Hook contract, Stderr
+// bullet) — and it burned the 24h dedup regardless, so an undelivered
+// nudge also suppressed the NEXT day's delivered one. `loadMemoryNudge`
+// below only BUILDS the message; the caller (hooks/session-start.js)
+// plumbs it into the HAND-008 `systemMessage` channel and calls
+// `recordMemoryNudge()` only once the message is actually assembled into
+// that channel, so the dedup state can never say "already nudged" for a
+// nudge nobody saw.
 
 const fs = require("fs");
 const path = require("path");
@@ -15,7 +26,7 @@ function pathToClaudeSlug(p) {
 // gate(ctx) — pure config decision (Phase 2b contract).
 // Note: this is the config-level gate only. The full emit path also
 // applies a 24h cooldown and a memory-audit check which are intrinsic
-// I/O and live in emitMemoryNudge.
+// I/O and live in loadMemoryNudge.
 //   ctx.cfg: parsed config (or {})
 function gate(ctx) {
   const v = ctx && ctx.cfg && ctx.cfg.memory
@@ -59,24 +70,28 @@ function recordMemoryNudge() {
   } catch {}
 }
 
-function emitMemoryNudge(projectDir) {
-  if (!shouldNudgeMemory()) return;
-  if (memoryNudgeCooldownActive()) return;
+// loadMemoryNudge builds the nudge message (or "" when nothing applies).
+// Pure with respect to delivery: it never writes stdout/stderr and never
+// calls recordMemoryNudge — the caller decides whether/where the message
+// is delivered and records the dedup state only once it has been.
+function loadMemoryNudge(projectDir) {
+  if (!shouldNudgeMemory()) return "";
+  if (memoryNudgeCooldownActive()) return "";
 
   let memoryHealth;
   try {
     memoryHealth = require("../../memory-health.js");
   } catch {
-    return;
+    return "";
   }
 
   const home = process.env.HOME || process.env.USERPROFILE || "";
   const slug = pathToClaudeSlug(projectDir);
   const memDir = path.join(home, ".claude", "projects", slug, "memory");
-  if (!fs.existsSync(memDir)) return;
+  if (!fs.existsSync(memDir)) return "";
 
   const r = memoryHealth.auditMemDir(memDir);
-  if (!r) return;
+  if (!r) return "";
 
   const parts = [];
   if (r.dead) parts.push(`${r.dead} dead`);
@@ -85,13 +100,10 @@ function emitMemoryNudge(projectDir) {
   const indexWarn = r.index && r.index.warn;
   if (indexWarn) parts.push("index bloated");
 
-  if (parts.length === 0) return;
+  if (parts.length === 0) return "";
 
   const short = slug.split("-").slice(-1)[0];
-  process.stderr.write(
-    `[memory] ${short}: ${parts.join(", ")} → tkr memory audit --fix\n`
-  );
-  recordMemoryNudge();
+  return `[memory] ${short}: ${parts.join(", ")} → tkr memory audit --fix`;
 }
 
 module.exports = {
@@ -100,5 +112,5 @@ module.exports = {
   shouldNudgeMemory,
   memoryNudgeCooldownActive,
   recordMemoryNudge,
-  emitMemoryNudge,
+  loadMemoryNudge,
 };

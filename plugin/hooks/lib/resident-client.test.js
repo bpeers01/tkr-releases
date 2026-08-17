@@ -112,6 +112,34 @@ function reply(socket, { exit = 0, body = "", err }) {
 
 const ENV_ON = { TKR_RESIDENT_ENABLED: "1" };
 
+// A stub binary that exists and exits immediately, standing in for a runtime
+// that dies. Must be an ABSOLUTE path: resolveTkrExe realpaths an explicit
+// TKR_BIN, so a bare name like "true" or "cmd.exe" resolves against cwd, fails,
+// and the call bails on unverifiable identity before maybeStart ever runs.
+//
+// Resolved from candidates rather than hardcoded to /bin/true (#365). macOS 26
+// ships no /bin/true at all — `true` is a shell builtin there and the only real
+// binary is /usr/bin/true — while Debian-family Linux has had /bin/true since
+// long before merged-/usr. Neither path is portable on its own, and the failure
+// mode is silent-looking: TKR_BIN pointed at a nonexistent file makes six
+// otherwise-unrelated assertions fail on identity verification.
+const STUB_BIN = (() => {
+  if (WIN) return process.env.ComSpec || "C:\\Windows\\System32\\cmd.exe";
+  const candidates = ["/usr/bin/true", "/bin/true"];
+  for (const c of candidates) {
+    try {
+      fs.accessSync(c, fs.constants.X_OK);
+      return c;
+    } catch {
+      /* try the next candidate */
+    }
+  }
+  throw new Error(
+    `no no-op stub binary found (tried ${candidates.join(", ")}) — ` +
+      "this suite needs one absolute, immediately-exiting executable",
+  );
+})();
+
 test("disabled by default — the prototype does not turn itself on", async () => {
   const dir = tmpState("default");
   const client = freshClient(dir);
@@ -526,14 +554,7 @@ test("lazy start is rate-limited", async () => {
   const dir = tmpState("ratelimit");
   const client = freshClient(dir);
   const marker = path.join(client.runDir(), `${client.keyFor("/p")}.start`);
-  // A binary that exits immediately, standing in for a runtime that dies.
-  // Must be an ABSOLUTE path: resolveTkrExe realpaths an explicit TKR_BIN, so
-  // a bare name like "cmd.exe" resolves against cwd, fails, and the call
-  // bails on unverifiable identity before maybeStart ever runs.
-  const stub = WIN
-    ? process.env.ComSpec || "C:\\Windows\\System32\\cmd.exe"
-    : "/bin/true";
-  const env = { ...ENV_ON, TKR_BIN: stub };
+  const env = { ...ENV_ON, TKR_BIN: STUB_BIN };
 
   await client.call("rewrite", "git status", null, { projectRoot: "/p", env });
   assert.ok(fs.existsSync(marker), "first miss should attempt a start");
@@ -547,6 +568,175 @@ test("lazy start is rate-limited", async () => {
     "subsequent misses inside the window must not re-attempt a start",
   );
   assert.ok(client.START_COOLDOWN_MS >= 1000, "start cooldown must be a real window");
+});
+
+// ── warm-up (#287) ──────────────────────────────────────────────────────────
+//
+// warm() moves the SAME lazy start the request path already performs to
+// SessionStart, so the first eligible Bash call finds a runtime instead of
+// starting one. Everything below asserts that it moved the timing and nothing
+// else: the same gates, in the same order, with the same suppressions.
+
+// deadPid returns a pid nothing can be running under, or null if this box
+// will not confirm one. 2147483647 is above Linux's default pid_max and is
+// not a multiple of 4, which Windows pids always are.
+function deadPid(client) {
+  for (const candidate of [2147483647, 2147483646, 4194303]) {
+    if (!client.processAlive(candidate)) return candidate;
+  }
+  return null;
+}
+
+test("warm does nothing unless the runtime is opted in", () => {
+  const dir = tmpState("warmoff");
+  const client = freshClient(dir);
+  const key = client.keyFor("/p");
+
+  assert.deepEqual(client.warm({ projectRoot: "/p", env: {} }), {
+    started: false,
+    reason: "disabled",
+  });
+  assert.deepEqual(
+    client.warm({ projectRoot: "/p", env: { TKR_RESIDENT_ENABLED: "1", TKR_RESIDENT_DISABLED: "1" } }),
+    { started: false, reason: "disabled" },
+  );
+  assert.equal(
+    fs.existsSync(path.join(client.runDir(), `${key}.start`)),
+    false,
+    "a disabled warm-up must not even record a start attempt",
+  );
+});
+
+test("warm starts a runtime when none is discoverable", () => {
+  const dir = tmpState("warmstart");
+  const client = freshClient(dir);
+  const key = client.keyFor("/p");
+
+  const v = client.warm({ projectRoot: "/p", env: { ...ENV_ON, TKR_BIN: STUB_BIN } });
+  assert.equal(v.reason, "started");
+  assert.equal(v.started, true);
+  assert.ok(
+    fs.existsSync(path.join(client.runDir(), `${key}.start`)),
+    "warm must go through the same rate-limited start marker as the request path",
+  );
+});
+
+// The point of the feature: after a warm-up, the first Bash call must find a
+// runtime rather than repeat the start. A live endpoint means no second spawn.
+test("warm is a no-op when a live runtime is already published", () => {
+  const dir = tmpState("warmwarm");
+  const client = freshClient(dir);
+  const key = client.keyFor("/p");
+  const ep = writeEndpoint(client, key); // pid defaults to this process — alive
+
+  const v = client.warm({ projectRoot: "/p", env: { ...ENV_ON, TKR_BIN: ep.exe } });
+  assert.equal(v.reason, "already_warm");
+  assert.equal(v.started, false);
+  assert.equal(
+    fs.existsSync(path.join(client.runDir(), `${key}.start`)),
+    false,
+    "an already-warm project must not burn its start-cooldown window",
+  );
+});
+
+// A crashed runtime leaves a perfectly valid endpoint file behind — teardown
+// only unlinks on a clean exit. Trusting the file alone would report
+// already_warm forever and warm-up would be worse than useless: it would
+// GUARANTEE the first Bash call hits a corpse.
+test("warm restarts when the published endpoint names a dead process", (t) => {
+  const dir = tmpState("warmdead");
+  const client = freshClient(dir);
+  const key = client.keyFor("/p");
+  const dead = deadPid(client);
+  if (dead === null) {
+    t.skip("no pid on this box could be confirmed dead");
+    return;
+  }
+  const ep = writeEndpoint(client, key, { pid: dead });
+
+  const v = client.warm({ projectRoot: "/p", env: { ...ENV_ON, TKR_BIN: ep.exe } });
+  assert.equal(v.reason, "started");
+  assert.ok(fs.existsSync(path.join(client.runDir(), `${key}.start`)));
+});
+
+// The request-timeout cooldown exists because a hung runtime is worse than
+// none. Warming one back up inside that window would reinstate exactly the
+// process the cooldown is suppressing.
+test("warm honors the request-timeout cooldown", () => {
+  const dir = tmpState("warmcool");
+  const client = freshClient(dir);
+  const key = client.keyFor("/p");
+  fs.mkdirSync(client.runDir(), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(client.runDir(), `${key}.cooldown`), String(Date.now() + 60_000));
+
+  const v = client.warm({ projectRoot: "/p", env: { ...ENV_ON, TKR_BIN: STUB_BIN } });
+  assert.equal(v.reason, "cooldown");
+  assert.equal(fs.existsSync(path.join(client.runDir(), `${key}.start`)), false);
+});
+
+// Two SessionStarts in quick succession (a /clear, a resume, two windows on
+// one project) must not become two runtime launches. The 5s marker is shared
+// with the request path, so warm cannot out-spend it either.
+test("warm shares the start rate limit with the request path", async () => {
+  const dir = tmpState("warmrate");
+  const client = freshClient(dir);
+  const key = client.keyFor("/p");
+  const env = { ...ENV_ON, TKR_BIN: STUB_BIN };
+  const marker = path.join(client.runDir(), `${key}.start`);
+
+  assert.equal(client.warm({ projectRoot: "/p", env }).started, true);
+  const firstMtime = fs.statSync(marker).mtimeMs;
+
+  const second = client.warm({ projectRoot: "/p", env });
+  assert.equal(second.reason, "suppressed");
+  assert.equal(second.started, false);
+
+  // And a request-path miss inside the same window must not re-attempt either.
+  await client.call("rewrite", "git status", null, { projectRoot: "/p", env });
+  assert.equal(
+    fs.statSync(marker).mtimeMs,
+    firstMtime,
+    "warm and call must share one start-cooldown window, not one each",
+  );
+});
+
+// Same identity rule as the request path: a runtime we could never accept must
+// never be started, or warm-up becomes a detached spawn per session for free.
+test("warm starts nothing when tkr identity is unestablishable", () => {
+  const dir = tmpState("warmid");
+  const client = freshClient(dir);
+  const key = client.keyFor("/p");
+  const env = { ...ENV_ON, PATH: path.join(dir, "empty"), HOME: path.join(dir, "nohome") };
+  delete env.TKR_BIN;
+
+  assert.equal(client.warm({ projectRoot: "/p", env }).reason, "no_binary");
+  assert.equal(fs.existsSync(path.join(client.runDir(), `${key}.start`)), false);
+
+  // A .js launcher resolves but cannot prove identity — same verdict.
+  fs.mkdirSync(client.runDir(), { recursive: true, mode: 0o700 });
+  const launcher = path.join(client.runDir(), "tkr-launcher.js");
+  fs.writeFileSync(launcher, "// launcher");
+  assert.equal(
+    client.warm({ projectRoot: "/p", env: { ...ENV_ON, TKR_BIN: launcher } }).reason,
+    "no_binary",
+  );
+});
+
+// SessionStart is the first hook to fire. A throw here is a session that fails
+// to start, so warm must return a verdict for every input, including nonsense.
+test("warm returns a verdict rather than throwing", () => {
+  const dir = tmpState("warmthrow");
+  const client = freshClient(dir);
+  for (const opts of [
+    { projectRoot: "/p", env: { ...ENV_ON, TKR_BIN: "\u0000bad" } },
+    { projectRoot: "", cwd: "", env: { ...ENV_ON } },
+    { projectRoot: "/p", env: { ...ENV_ON, TKR_BIN: STUB_BIN }, cwd: null },
+  ]) {
+    const v = client.warm(opts);
+    assert.equal(typeof v.reason, "string");
+    assert.equal(typeof v.started, "boolean");
+  }
+  assert.doesNotThrow(() => client.warm());
 });
 
 // The client derives the runtime key from its own port of

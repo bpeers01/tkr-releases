@@ -53,11 +53,35 @@ function runDir() {
   return path.join(stateDir(), "run");
 }
 
-// keyFor mirrors resident.Key: sha256 of the project root, first 16 hex chars.
-// One runtime per project root, because the state it reuses (config, filter
-// registry) is root-scoped.
+// canonicalRoot mirrors resident.CanonicalRoot exactly: path.resolve, then
+// fs.realpathSync best-effort, then lowercase on Windows. Must stay identical
+// to the Go function or the two sides hash different bytes for the same root.
+//
+// Why this exists (#344): the server hashes its `--project-root` flag; the
+// client (here) derives its root independently from process.cwd(). On macOS
+// /tmp and /var are symlinks into /private, and Node's process.cwd() can
+// return either spelling depending on how the process was launched, so the
+// two sides agreed on the bytes only by luck. Hashing the raw string then
+// keys a runtime under a value the other side never computes — every lookup
+// misses silently. realpathSync must be best-effort: keyFor has to stay
+// total, and a root that does not exist yet must still hash to something
+// stable.
+function canonicalRoot(root) {
+  let abs = path.resolve(String(root));
+  try {
+    abs = fs.realpathSync(abs);
+  } catch {
+    // unresolvable (doesn't exist yet, permissions) — keep the resolved-but-
+    // unrealpathed form rather than fail
+  }
+  return process.platform === "win32" ? abs.toLowerCase() : abs;
+}
+
+// keyFor mirrors resident.Key: sha256 of the CANONICAL project root, first 16
+// hex chars. One runtime per project root, because the state it reuses
+// (config, filter registry) is root-scoped.
 function keyFor(projectRoot) {
-  return crypto.createHash("sha256").update(String(projectRoot)).digest("hex").slice(0, 16);
+  return crypto.createHash("sha256").update(canonicalRoot(projectRoot)).digest("hex").slice(0, 16);
 }
 
 function disabled(env = process.env) {
@@ -239,6 +263,92 @@ function maybeStart(projectRoot, key, env = process.env) {
   }
 }
 
+// processAlive is a liveness probe for the PID an endpoint file names.
+//
+// Used ONLY by warm(), never on the request path: there, a connect is the
+// authoritative answer and a PID check would be a second, weaker one. Here
+// there is no request to piggyback on, and the case it catches is real — a
+// crashed runtime leaves a fully valid endpoint file behind (teardown only
+// unlinks on a clean exit), so a warm-up that trusted readEndpoint alone would
+// declare that project warm and start nothing, leaving the first Bash call to
+// discover the corpse exactly as it does today.
+//
+// signal 0 performs the permission/existence check without delivering
+// anything, on Windows too (libuv maps it to OpenProcess). EPERM means the
+// process exists and is not ours to signal — alive. Anything else, including a
+// throw, reads as "cannot establish death", and warm() treats an unusable
+// answer as alive: a false "dead" costs a pointless start attempt, and
+// maybeStart's rate limit is the only thing bounding that.
+function processAlive(pid) {
+  if (!(pid > 0)) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return !!(err && err.code === "EPERM");
+  }
+}
+
+// warm starts a runtime for a project root ahead of the first request (#287).
+//
+// The lazy start in call() below is correct but arrives one call late: the
+// Bash call that discovers no runtime pays the full spawn AND starts the
+// runtime, so the win begins on the SECOND eligible call. SessionStart is a
+// point where the session is guaranteed to have started and no Bash call has
+// happened yet, which makes it the earliest honest place to pay the cold
+// start (measured p50 ~54ms on the #209 bench box) off the hot path.
+//
+// This adds no new lifecycle machinery on purpose. It is the same maybeStart
+// the request path already uses, reached through the same gates in the same
+// order, so the singleton lock, the 5s start cooldown, the timeout cooldown,
+// the binary-stamp handoff and the idle shutdown all keep their existing
+// meaning. The ONLY new thing is when it is called.
+//
+// Never blocks: no connect, no ping, no wait on the child. The spawn is
+// detached, stdio-ignored and unref'd, so this returns as soon as the OS has
+// forked. Never throws — every failure is a verdict, because a SessionStart
+// hook that can fail is a session that can fail to start.
+//
+// Returns {started, reason} where reason is one of:
+//   disabled     — not opted in, or the kill switch is set
+//   no_binary    — tkr identity unestablishable; a runtime we would refuse
+//   cooldown     — a request timed out recently; the path is suppressed
+//   already_warm — a valid endpoint whose PID is alive
+//   started      — a start was launched
+//   suppressed   — start cooldown, or the marker could not be written
+function warm(opts = {}) {
+  const env = opts.env || process.env;
+  try {
+    if (!enabled(env)) return { started: false, reason: "disabled" };
+    // Same bail as call(): a runtime whose binary we could never accept is
+    // pure cost. Checked before maybeStart, not after.
+    if (!resolveTkrExe(env)) return { started: false, reason: "no_binary" };
+
+    const projectRoot = opts.projectRoot || projectRootFor(opts.cwd || process.cwd());
+    const key = keyFor(projectRoot);
+
+    // A cooldown means a runtime for this key answered too slowly within the
+    // last minute. Starting one now would reinstate exactly the process the
+    // cooldown exists to suppress.
+    if (Date.now() < readCooldown(key)) {
+      return { started: false, reason: "cooldown", projectRoot, key };
+    }
+
+    const ep = readEndpoint(key, env);
+    if (ep && processAlive(ep.pid)) {
+      return { started: false, reason: "already_warm", projectRoot, key, pid: ep.pid };
+    }
+
+    const started = maybeStart(projectRoot, key, env);
+    return { started, reason: started ? "started" : "suppressed", projectRoot, key };
+  } catch {
+    // Any unexpected shape — an unreadable home directory, a permissions
+    // change under the run dir — is a warm-up that did not happen, which is
+    // precisely the pre-#287 behavior.
+    return { started: false, reason: "error" };
+  }
+}
+
 // request sends one framed request and resolves to {exit, body} or null.
 //
 // Framing: one line of JSON header, then exactly header.n body bytes. The body
@@ -375,7 +485,10 @@ async function call(op, cmd, body, opts = {}) {
 
 module.exports = {
   call,
+  warm,
+  processAlive,
   keyFor,
+  canonicalRoot,
   projectRootFor,
   readEndpoint,
   runDir,
