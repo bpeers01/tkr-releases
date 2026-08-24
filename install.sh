@@ -538,7 +538,37 @@ else
     rm -rf "${PLUGIN_DIR:?}/$d"
   done
   tar xzf "${WORK_DIR}/${BUNDLE_FILE}" -C "$PLUGIN_DIR"
-  chmod +x "$PLUGIN_DIR"/scripts/*.sh "$PLUGIN_DIR"/adapters/*.sh "$PLUGIN_DIR"/hooks/*.sh 2>/dev/null || true
+  # Restore exec bits stripped by tar. Every .sh in the repo is tracked
+  # 100644 under core.fileMode=false, so this is the only thing that makes
+  # a shipped script executable.
+  #
+  # Deliberately not silent (#402). The old form ended in
+  # `2>/dev/null || true`, which made a glob that matched NOTHING
+  # indistinguishable from one that matched — the line could not fail, so
+  # it could not report having missed anything. That is why nobody noticed
+  # it reaches exactly one directory level.
+  #
+  # Tier-aware, because loud must not mean broken: the core bundle ships
+  # neither scripts/ nor adapters/ (see .github/workflows/release.yml
+  # "Create plugin bundles"), and install.sh runs under `set -e`, so a
+  # bare chmod over an absent dir would abort every core-tier install. An
+  # absent dir is normal and skipped; a dir that is PRESENT but holds no
+  # .sh is a bundle-layout change worth saying out loud; and a chmod that
+  # actually fails now aborts instead of being swallowed.
+  #
+  # maxdepth 1 is intentional and matches the old reach. Nested scripts are
+  # invoked as `bash <script>` and do not need the bit —
+  # hooks/keepalive/*.sh per cmd/tkr/cmd_doctor_hook_exec.go, and
+  # skills/*/scripts/*.sh per skills/handoff/SKILL.md. The distinction that
+  # matters is invocation form, not location.
+  for _d in scripts adapters hooks; do
+    [ -d "$PLUGIN_DIR/$_d" ] || continue
+    if [ -z "$(find "$PLUGIN_DIR/$_d" -maxdepth 1 -name '*.sh' -print -quit)" ]; then
+      echo "Warning: ${PLUGIN_DIR}/${_d} contains no *.sh to make executable" >&2
+      continue
+    fi
+    chmod +x "$PLUGIN_DIR/$_d"/*.sh
+  done
   echo "Plugin files extracted to ${PLUGIN_DIR}"
 fi
 
