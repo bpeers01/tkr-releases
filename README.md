@@ -9,6 +9,28 @@ It works on four fronts at once: compresses bloated tool output before Claude re
 
 Built for Claude Code on **Pro, Max, or Team**. API users get the same wins paid in dollars instead of cap headroom (`tkr gain --economics`). Binaries ship every release for macOS, Linux, and Windows; automated release-validation smoke testing currently covers Linux and Windows only (see Requirements). Single static binary, zero runtime dependencies.
 
+> **What's new in v5.24.0** — If your team runs tkr on more than one
+> machine, the live dashboard can now show all of them at once instead of
+> just the one it's running on — point it at a shared collector and it'll
+> show everyone's status, badged by how fresh each reading is. A few bugs
+> in that shared-status pipeline are fixed along the way, including one
+> with real security consequence: an admin-level credential could
+> previously overwrite another team member's data on the shared collector
+> without the extra step it was supposed to require — that's now locked
+> down. Delegated background work (`tkr mcp delegate`) got noticeably more
+> reliable: a temporary hiccup from the model provider now retries
+> automatically instead of losing the whole run, a run that runs out of
+> turns hands back whatever it managed to produce instead of nothing, and a
+> run that gets interrupted can now be resumed from where it left off
+> instead of starting over. tkr's own savings numbers got more honest in
+> one more place: reading part of a file or counting matches with `grep -c`
+> now reports "not measurable" instead of a made-up percentage, so the
+> summary numbers can't be dragged down by counting things tkr never
+> actually saved. Smaller additions: a quiet nudge when a newer version is
+> available, a durable session goal that survives context compaction, and
+> an interactive setup menu on a bare `tkr init`.
+> [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
+>
 > **What's new in v5.23.0** — This release closes another batch of
 > instruments that reported a plausible-looking value instead of the
 > truth, without ever looking broken. `tkr git status` could report a
@@ -326,10 +348,10 @@ Claude Code, Gemini CLI, and Cursor rewrite commands automatically — no manual
 
 ```bash
 # macOS / Linux / Git Bash
-TKR_VERSION=v5.23.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
+TKR_VERSION=v5.24.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.23.0
+irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.24.0
 ```
 
 #### Manual download
@@ -686,9 +708,9 @@ When installed as a plugin, tkr registers 9 core on-demand skills invocable with
 ## Verify Installation
 
 ```bash
-tkr --version             # expected: tkr v5.22.0 (or newer)
+tkr --version             # expected: tkr v5.24.0 (or newer)
 tkr doctor                # health check — PASS/WARN/FAIL rows; exit 0 or 2
-tkr verify                # run built-in filter tests (341 should pass)
+tkr verify                # run built-in filter tests (342 should pass)
 ```
 
 Plugin status: `/status` skill inside Claude Code.
