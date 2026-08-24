@@ -87,6 +87,11 @@ const { readStdinWithTimeout, hooksDisabled } = require("./lib/stdin-with-timeou
 const { rotateIfLarge } = require("./lib/rotate-jsonl");
 const { stateDir } = require("./lib/state-dir");
 const { getSessionID } = require("./lib/session-id");
+const {
+  popOldestSnapshot,
+  currentGitStatus,
+  diffTrackedMutations,
+} = require("./lib/git-status-snapshot");
 
 // v1 -> v2: added the declared_* self-report fields, parsed from the
 // worker's fenced tkr-handoff block. Every v2 field is omitted when the
@@ -243,6 +248,37 @@ function appendRow(row) {
   fs.appendFileSync(target, JSON.stringify(row) + "\n");
 }
 
+// checkStateMutation is the SubagentStop half of INV-097: pop the oldest
+// pending git-status snapshot recorded for this session at Agent spawn
+// (agent-search-inject.js), diff it against the current tracked-file
+// state, and return a human-readable warning string when tracked files
+// changed that the snapshot did not already show as dirty — the exact
+// gap a self-report cannot close, since a gate reading the mutated file
+// cannot tell a falsified value from a correct one.
+//
+// Returns null on "nothing to report" AND on any failure (no snapshot,
+// no git, not a repo) — fails open, never throws. Best-effort only: see
+// hooks/lib/git-status-snapshot.js for why the snapshot/stop correlation
+// is FIFO-approximate rather than an exact join.
+function checkStateMutation(ev) {
+  try {
+    const sid = getSessionID(ev);
+    const before = popOldestSnapshot(sid);
+    if (!before) return null;
+    const after = currentGitStatus();
+    if (after === null) return null;
+    const mutated = diffTrackedMutations(before.lines, after);
+    if (mutated.length === 0) return null;
+    return (
+      "tkr: this subagent's spawn left tracked-file changes on disk that " +
+      "its own report did not account for (INV-097) — " +
+      mutated.slice(0, 10).map(field).join("; ")
+    );
+  } catch {
+    return null;
+  }
+}
+
 function main() {
   if (hooksDisabled() || outcomesDisabled()) {
     process.stdout.write("{}");
@@ -271,7 +307,12 @@ function main() {
       } catch {
         // Best-effort telemetry; a full disk must not stall a subagent.
       }
-      process.stdout.write("{}");
+      const warning = checkStateMutation(input);
+      if (warning) {
+        process.stdout.write(JSON.stringify({ systemMessage: warning }));
+      } else {
+        process.stdout.write("{}");
+      }
     })
     .catch(() => {
       process.stdout.write("{}");
@@ -287,6 +328,7 @@ module.exports = {
   ledgerPath,
   outcomesDisabled,
   parseHandoff,
+  checkStateMutation,
 };
 
 if (require.main === module) {

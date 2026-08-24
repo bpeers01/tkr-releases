@@ -7,6 +7,7 @@
 //   planning-nudge       — capability hint for plan-mode/blueprint planners
 //   cache-mechanics-nudge — FROZEN proposal §5 Q4 prefix-cache framework
 //   read-nudge           — LCTX-001 tkr_read map/signatures hint
+//   goal-nudge            — #381 item 18: one capped bullet for `tkr goal`
 //   budget-warning       — delegation budget + L0 pinned-budget warnings
 //   continue             — L0R advisory: .continue-here.md (file-first) or JSONL fallback
 //   snapshot             — load XML for /compact + /resume
@@ -41,6 +42,7 @@ const {
   shouldEmitCacheMechanicsNudge,
 } = require("./lib/sessionstart/cache-mechanics-nudge");
 const { loadReadNudge } = require("./lib/sessionstart/read-nudge");
+const { loadGoalBullet } = require("./lib/sessionstart/goal-nudge");
 const { loadGraduationNudge } = require("./lib/sessionstart/graduation-nudge");
 const {
   getBudgetWarning,
@@ -122,9 +124,20 @@ function delegateNudge() {
 // what every caller and test already consumes, and because the one producer
 // (loadContinue) has a telemetry side effect that must fire exactly once.
 function buildCoreGuidance(sid, projectPath, source, out) {
+  // `tkr claude` pins the replacement system prompt and flags it with
+  // TKR_SYSPROMPT=1. Its `# Tone and output` section is the session's only
+  // voice spec by construction, so the brevity block must not ship there.
+  const pinnedSysprompt = process.env.TKR_SYSPROMPT === "1";
   const brevityMode = getBrevityMode();
   writeBrevityFlag(brevityMode);
-  const brevitySection = loadBrevitySection(brevityMode);
+  // Emitting brevity alongside the pinned prompt shipped a SECOND voice spec
+  // as a system-reminder, contradicting the first (drop-articles vs. ordinary
+  // prose) at a different authority level. Measured effect of the pair: none —
+  // 8.57 articles/100w across 396K words of assistant prose, i.e. baseline
+  // English, with compliance visible on turn 1 only. A model handed competing
+  // specs falls back to its own register. Plain `claude` has no pinned prompt,
+  // so there the block is still the only voice guidance and still ships.
+  const brevitySection = pinnedSysprompt ? "" : loadBrevitySection(brevityMode);
   const budgetWarning = getBudgetWarning();
   const pinnedWarning = loadPinnedBudgetWarning(sid);
   const continueResult = loadContinue(sid, projectPath, source);
@@ -141,6 +154,10 @@ function buildCoreGuidance(sid, projectPath, source, out) {
   const planningNudge = loadPlanningNudge();
   const cacheMechanicsNudge = loadCacheMechanicsNudge();
   const readNudge = loadReadNudge();
+  // #381 item 18: durable user-set goal, read fresh every SessionStart —
+  // per-session STATE like resumeAdvisory below, not standing guidance, so
+  // it belongs in dynamicState and fires even under TKR_SYSPROMPT=1.
+  const goalBullet = loadGoalBullet(projectPath);
   // #52: one-time suggest→rewrite prompt. STATE, not standing guidance —
   // it reports what this user's own history says — so it rides dynamicState
   // and fires on the TKR_SYSPROMPT path too. Empty on all but one session.
@@ -165,7 +182,7 @@ function buildCoreGuidance(sid, projectPath, source, out) {
   // state). Loaders above still run unconditionally so their side effects
   // (e.g. writeBrevityFlag) fire on every path.
   const dynamicState =
-    `${budgetWarning}${pinnedWarning}${resumeAdvisory}` +
+    `${budgetWarning}${pinnedWarning}${resumeAdvisory}${goalBullet}` +
     `${subdirZoneSection}${brevitySection}${graduationNudge}`;
 
   // Standing guidance (tkr_search / compressed-output / delegate + the
@@ -177,7 +194,7 @@ function buildCoreGuidance(sid, projectPath, source, out) {
   // drop it and emit STATE only. When absent (plain `claude`, no pinned
   // tkr prompt) the SessionStart block is the only delivery channel, so
   // emit the full standing block.
-  if (process.env.TKR_SYSPROMPT === "1") {
+  if (pinnedSysprompt) {
     return `${dynamicState}\n`;
   }
 

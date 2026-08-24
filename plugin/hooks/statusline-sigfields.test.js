@@ -21,15 +21,13 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const { bashPath, logInterpreter } = require("./lib/bash-interpreter");
 
-function which(cmd) {
-  const finder = process.platform === "win32" ? "where" : "which";
-  const r = spawnSync(finder, [cmd], { stdio: "ignore" });
-  return r.status === 0;
-}
-
-const HAVE_BASH = which("bash");
+const BASH = bashPath();
+const HAVE_BASH = !!BASH;
 const SCRIPT = path.join(__dirname, "statusline.sh");
+
+logInterpreter("statusline-sigfields");
 
 // Pull the real block out of the real script — no mirrored copy to keep in
 // lockstep.
@@ -61,7 +59,7 @@ ${extractParser()}
 ${reports}
 `;
   try {
-    const r = spawnSync("bash", ["-c", script, "bash", cache], {
+    const r = spawnSync(BASH, ["-c", script, "bash", cache], {
       encoding: "utf8",
     });
     assert.strictEqual(r.status, 0, `parser exited ${r.status}: ${r.stderr}`);
@@ -163,7 +161,7 @@ TKR_SIG_CACHE="$1"
 ${extractParser()}
 `;
   try {
-    spawnSync("bash", ["-c", script, "bash", cache], { encoding: "utf8" });
+    spawnSync(BASH, ["-c", script, "bash", cache], { encoding: "utf8" });
     return fs.existsSync(marker);
   } finally {
     fs.rmSync(marker, { force: true });

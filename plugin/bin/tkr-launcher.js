@@ -193,7 +193,11 @@ function readPluginVersion(launcherDir) {
   try {
     const p = path.join(launcherDir, "..", ".claude-plugin", "plugin.json");
     const j = JSON.parse(fs.readFileSync(p, "utf8"));
-    return j.version || null;
+    // tkrEngineVersion overrides `version` for plugins (e.g. tkr-cowork)
+    // whose own release cadence tracks something other than the tkr
+    // binary's — `version` there is not a tkr-releases tag and would
+    // 404 the download.
+    return j.tkrEngineVersion || j.version || null;
   } catch {
     return null;
   }

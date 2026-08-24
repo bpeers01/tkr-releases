@@ -240,6 +240,18 @@ test("a subagent dispatch emits nothing — a worker must not spawn a worker", (
   assert.strictEqual(directive(hookInput({ scope: "subagent" })), "");
 });
 
+// INV-074 residue: computeWorkRouteDirective previously hand-rolled only the
+// two undocumented mirrors (subagent_type/scope) and never gated on the
+// documented agent_id/agent_type markers. Now routed through
+// lib/subagent-context.js's isSubagentContext; the neither-marker case
+// (proving the directive still fires normally) is covered above by
+// "advisory: the directive is emitted for a native plan".
+test("agent_id/agent_type also emit nothing (INV-074)", () => {
+  writeState("advisory");
+  assert.strictEqual(directive(hookInput({ agent_id: "a1" })), "");
+  assert.strictEqual(directive(hookInput({ agent_type: "Explore" })), "");
+});
+
 test("kill switches emit nothing", () => {
   writeState("advisory");
   for (const key of ["TKR_HOOKS_DISABLED", "TKR_ROUTE_DISABLED", "TKR_WORK_ROUTE_DISABLED"]) {

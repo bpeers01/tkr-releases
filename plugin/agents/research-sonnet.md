@@ -33,6 +33,11 @@ none should be assumed. Return:
 
 Stop at the first complete answer or the turn ceiling.
 
+Never end this reply on narration — the final message is the deliverable;
+a narration-shaped ending is treated as truncated and re-sent. If tracked
+files were mutated, enumerate them with `git status --porcelain` output
+before the handoff block; state none if read-only.
+
 End your reply with this block and nothing after it:
 
 ```tkr-handoff

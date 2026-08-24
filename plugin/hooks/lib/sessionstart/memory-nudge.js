@@ -103,7 +103,22 @@ function loadMemoryNudge(projectDir) {
   if (parts.length === 0) return "";
 
   const short = slug.split("-").slice(-1)[0];
-  return `[memory] ${short}: ${parts.join(", ")} → tkr memory audit --fix`;
+  // `tkr memory audit --fix` only deletes DEAD files (internal/cmd/memory.go
+  // applyMemFix) — OVERSIZED, STALE, and an oversized index all need a human
+  // to look and are never touched by --fix. Pointing at --fix regardless of
+  // which categories fired used to promise a fix that silently didn't
+  // happen for anything but dead: MEM-19 (#381 item 19).
+  const fixable = r.dead > 0;
+  const reviewOnly = r.oversized > 0 || r.stale > 0 || indexWarn;
+  let action;
+  if (fixable && reviewOnly) {
+    action = "tkr memory audit --fix (removes dead only — oversized/stale need manual review)";
+  } else if (fixable) {
+    action = "tkr memory audit --fix";
+  } else {
+    action = `tkr memory audit --project ${slug}`;
+  }
+  return `[memory] ${short}: ${parts.join(", ")} → ${action}`;
 }
 
 module.exports = {

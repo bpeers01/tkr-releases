@@ -14,15 +14,13 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const { bashPath, logInterpreter, which } = require("./lib/bash-interpreter");
 
-function which(cmd) {
-  const finder = process.platform === "win32" ? "where" : "which";
-  const r = spawnSync(finder, [cmd], { stdio: "ignore" });
-  return r.status === 0;
-}
+const BASH = bashPath();
+const HAVE_BASH = !!BASH;
+const HAVE_JQ = !!which("jq");
 
-const HAVE_BASH = which("bash");
-const HAVE_JQ = which("jq");
+logInterpreter("statusline-mode-resolve");
 
 // Mirror of the MODE_FILE resolution block in hooks/statusline.sh.
 // Any divergence between this snippet and the real script is a bug —
@@ -55,7 +53,7 @@ function norm(p) {
 }
 
 function runResolve(env) {
-  const r = spawnSync("bash", ["-c", RESOLVE_SNIPPET], {
+  const r = spawnSync(BASH, ["-c", RESOLVE_SNIPPET], {
     env: Object.assign({}, process.env, env),
     encoding: "utf8",
   });

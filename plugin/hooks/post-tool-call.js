@@ -328,13 +328,28 @@ async function processEvent(event) {
   // wrong-counterfactual half of this bug is fixed independently in
   // recordTelemetry, which still guards any other caller that reaches
   // it without this gate.
+  //
+  // #381 item 25: this branch returns before recordTelemetry is ever
+  // called, so the host-cap-exceeded passthrough previously left NO
+  // trace in telemetry (recordTelemetry's own host-cap detection only
+  // fires for callers that reach it). Call it explicitly here so the
+  // reason is visible; recordTelemetry derives "host_cap_exceeded" from
+  // bytesBefore vs the same cap this branch just checked.
   if (stdout.length > hostOutputCapBytes()) {
+    recordTelemetry("compression", stdout.length, stdout.length, command);
     return brevityResponse(composedCtx);
   }
 
   // Skip compression for commands already routed through tkr (PreToolUse
   // handled output filtering), but still reinforce brevity.
   if (/^\s*tkr\s/.test(command)) {
+    recordTelemetry(
+      "compression",
+      stdout.length,
+      stdout.length,
+      command,
+      "already_routed_tkr",
+    );
     return brevityResponse(composedCtx);
   }
 
@@ -345,6 +360,13 @@ async function processEvent(event) {
       recordTelemetry("search", stdout.length, cleaned.length, command);
       return makeResponse(event, outputInfo, cleaned, composedCtx);
     }
+    recordTelemetry(
+      "search",
+      stdout.length,
+      stdout.length,
+      command,
+      "search_output_already_clean",
+    );
     return brevityResponse(composedCtx);
   }
 
@@ -354,13 +376,29 @@ async function processEvent(event) {
   // own cwd is not reliably the project.
   const filtered = await tryFilterStdin(command, stdout, {
     cwd: typeof event.cwd === "string" ? event.cwd : undefined,
+    // #381 item 4 / #337 item 4: the host exposes only a pass/fail boolean,
+    // not a numeric exit code (precedent: hooks/cli-corrections-injector.js).
+    isError: event.tool_response?.is_error === true,
   });
   if (filtered !== null && filtered !== stdout) {
     recordTelemetry("compression", stdout.length, filtered.length, command);
     return makeResponse(event, outputInfo, filtered, composedCtx);
   }
 
-  // No compression applied — still reinforce brevity
+  // No compression applied. #381 item 25: tryFilterStdin collapses several
+  // Go-side branches (no registry, no matching filter, compress-passthrough
+  // declined, resident/spawn failure) into a single null/unchanged result —
+  // none of those are cheaply distinguishable from here without widening the
+  // filter-stdin wire protocol, so this is the generic fallback reason for
+  // "some filter-selection path chose not to filter, cause unknown at this
+  // layer". Still reinforce brevity.
+  recordTelemetry(
+    "compression",
+    stdout.length,
+    stdout.length,
+    command,
+    "no_matching_filter",
+  );
   return brevityResponse(composedCtx);
 }
 

@@ -44,10 +44,18 @@ function stripSearchInternals(text) {
 // against the spawn's 5000ms, because a slow runtime costs its deadline ON TOP
 // of the spawn we then have to do anyway. Fall back early, not late.
 async function tryFilterStdin(command, stdout, opts = {}) {
+  // #381 item 4 / #337 item 4: the real exit signal of the command whose
+  // output is being filtered. The host only exposes a boolean (is_error),
+  // not a numeric exit code, so 1 stands in for "nonzero" — enough for
+  // ApplyFilter's stage 9 gate (exitCode == 0), which only distinguishes
+  // success from failure. Threaded to both paths so they stay behaviorally
+  // identical, per this function's own invariant above.
+  const exitCode = opts.isError ? 1 : 0;
   try {
     const served = await resident.call("filter-stdin", command, stdout, {
       cwd: opts.cwd,
       timeoutMs: opts.timeoutMs,
+      exitCode,
     });
     if (served) {
       // Exit-code parity with the spawn path: tkrSpawnSync throws on any
@@ -61,7 +69,10 @@ async function tryFilterStdin(command, stdout, opts = {}) {
     // fall through to the spawn
   }
   try {
-    return tkrSpawnSync(["filter-stdin", command], {
+    const args = exitCode
+      ? ["filter-stdin", `--exit-code=${exitCode}`, command]
+      : ["filter-stdin", command];
+    return tkrSpawnSync(args, {
       input: stdout,
       timeout: 5000,
     });
@@ -71,8 +82,30 @@ async function tryFilterStdin(command, stdout, opts = {}) {
   }
 }
 
+// Flatten an MCP-style content array ([{type:"text",text}, ...]) to one string.
+// Non-text blocks (images, embedded resources) carry no `.text` and are dropped.
+function joinContentBlocks(blocks) {
+  return blocks
+    .map((item) => {
+      if (typeof item === "string") return item;
+      if (item && typeof item.text === "string") return item.text;
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 function extractToolText(event) {
   const response = event.tool_response || {};
+  // MCP tools hand PostToolUse a BARE array as tool_response — not the
+  // {content:[...]} wrapper the branch below expects. Verified live against
+  // Claude Code 2.1.241; see docs/reports/2026-08-23-mcp-response-compression-feasibility.md.
+  // Without this branch every mcp__* call extracts to null.
+  if (Array.isArray(event.tool_response)) {
+    const text = joinContentBlocks(event.tool_response);
+    if (text) return { field: "content", text, rootArray: true };
+    return null;
+  }
   if (typeof response.stdout === "string") {
     return { field: "stdout", text: response.stdout };
   }

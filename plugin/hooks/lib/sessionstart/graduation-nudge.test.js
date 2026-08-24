@@ -92,8 +92,15 @@ test("TKR_BIN override reaches the spawned command", () => {
   fs.writeFileSync(shim, `process.stdout.write(${JSON.stringify(line)});\n`);
   const prevBin = process.env.TKR_BIN;
   const prevNoGrad = process.env.TKR_SUGGEST_NO_GRADUATION;
+  const prevStateDir = process.env.TKR_STATE_DIR;
   delete process.env.TKR_SUGGEST_NO_GRADUATION;
   try {
+    // Isolate from the real ~/.tkr cache: loadGraduationNudge() checks
+    // readCache() before ever touching TKR_BIN, so on a dogfooded box a
+    // recent real verdict (written within CACHE_TTL_MS by an actual
+    // SessionStart hook, possibly this very session) short-circuits the
+    // spawn and this test observes the cached value instead of the shim's.
+    process.env.TKR_STATE_DIR = dir;
     process.env.TKR_BIN = shim;
     const out = loadGraduationNudge();
     assert.ok(out.includes(line), `expected shim output, got: ${JSON.stringify(out)}`);
@@ -101,6 +108,8 @@ test("TKR_BIN override reaches the spawned command", () => {
     if (prevBin === undefined) delete process.env.TKR_BIN;
     else process.env.TKR_BIN = prevBin;
     if (prevNoGrad !== undefined) process.env.TKR_SUGGEST_NO_GRADUATION = prevNoGrad;
+    if (prevStateDir === undefined) delete process.env.TKR_STATE_DIR;
+    else process.env.TKR_STATE_DIR = prevStateDir;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

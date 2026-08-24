@@ -615,6 +615,38 @@ test("subagent dispatch and the kill switch skip the state read entirely", () =>
   }
 });
 
+// INV-074 residue: routeInjectContext previously hand-rolled only the two
+// undocumented mirrors (top-level subagent_type / scope) and never gated on
+// the documented agent_id/agent_type markers, so a build shipping only those
+// would have let a subagent's sustained-mismatch streak inject anyway. Now
+// routed through lib/subagent-context.js's isSubagentContext.
+test("agent_id/agent_type gate routeInjectContext exactly like the undocumented mirrors", () => {
+  const sid = `rs-agenttype-${process.pid}`;
+  const prompt = `rs-agenttype-prompt-${process.pid}`;
+  const sfp = writeState(sid, prompt);
+  const efp = writeEffortFile(sid, "low"); // active low vs verdict high — would sustain-inject
+  try {
+    withEnv({}, () => {
+      for (let i = 0; i < ROUTE_STREAK_MIN + 1; i++) {
+        assert.strictEqual(
+          routeInjectContext({ prompt, session_id: sid, agent_id: "a1" }, null),
+          "",
+          `turn ${i + 1} (agent_id) must stay silent inside a subagent`,
+        );
+      }
+      for (let i = 0; i < ROUTE_STREAK_MIN + 1; i++) {
+        assert.strictEqual(
+          routeInjectContext({ prompt, session_id: sid, agent_type: "Explore" }, null),
+          "",
+          `turn ${i + 1} (agent_type) must stay silent inside a subagent`,
+        );
+      }
+    });
+  } finally {
+    cleanup(sfp, efp, routeNudgeStatePath(sid));
+  }
+});
+
 test("a sessionless read never resolves a state path", () => {
   assert.strictEqual(routeState.routeStatePath(""), "");
   assert.strictEqual(routeState.readRouteState("", {}), null);

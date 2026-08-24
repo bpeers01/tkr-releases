@@ -45,6 +45,21 @@ InstructionsLoaded).
   Live-verified on native Read with Claude Code 2.1.232: a shape-matched
   object replaced both the model-visible result and persisted transcript;
   a bare replacement string was accepted by the hook runner but ignored.
+  **Extended to MCP tools on 2.1.241** (#500), where two things differ.
+  (a) The envelope is load-bearing: a two-run controlled experiment with
+  one variable changed found a TOP-LEVEL `updatedToolOutput` silently
+  ignored — the model received all 56,212 bytes — while the same payload
+  nested inside `hookSpecificOutput` cut the `tool_result` to 100 bytes.
+  Nest it. (b) "Preserve the shape" is not academic here: the live MCP
+  `tool_response` is a **bare array**, `[{type:"text",text}]`, NOT the
+  `{content:[...]}` wrapper. `{...tool_response}` on an array yields
+  `{"0":{...}}`, which serializes as an object and is silently ignored —
+  the same failure mode as the bare string. `makeResponse`
+  (`lib/posttool/response.js`) carries the array branch; `extractToolText`
+  returned `null` for this shape until #500, so no filter could see MCP
+  output at all. Do not re-derive either finding from a synthetic fixture:
+  the pre-#500 `asArray` unit test passed against a shape MCP never emits,
+  which is exactly why the bug read as already-handled.
 - **Stderr** — debug only; never relied on for control flow. On a hook that
   exits 0 it reaches the debug log and nothing else — not the transcript,
   not the user. Anything a human is meant to READ goes out as

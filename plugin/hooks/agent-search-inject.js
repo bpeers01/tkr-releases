@@ -40,6 +40,7 @@ const { readJSONSync } = require("./lib/safe-json");
 const { rotateIfLarge } = require("./lib/rotate-jsonl");
 const { isSubagentContext } = require("./lib/subagent-context");
 const { tkrSpawnArgv } = require("./lib/tkr-bin");
+const { snapshotGitStatus } = require("./lib/git-status-snapshot");
 const {
   rememberMode,
   timeoutVerdict,
@@ -75,6 +76,12 @@ function handleInput(input) {
     const subagentType = toolInput.subagent_type || "";
     const prompt = toolInput.prompt || "";
     const sid = getSessionID(event);
+
+    // INV-097: snapshot the worktree's tracked-file state before this
+    // subagent runs, so SubagentStop (subagent-outcome.js) can detect a
+    // mutation the agent's own final message never reported. Best-effort
+    // and fails open — see hooks/lib/git-status-snapshot.js.
+    snapshotGitStatus(sid);
 
     // Work routing is resolved BEFORE the ledger row so the row can carry
     // planned-vs-actual (§14.2). In advisory nothing is rewritten and the

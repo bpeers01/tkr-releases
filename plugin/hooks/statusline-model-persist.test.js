@@ -24,15 +24,13 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const { bashPath, logInterpreter, which } = require("./lib/bash-interpreter");
 
-function which(cmd) {
-  const finder = process.platform === "win32" ? "where" : "which";
-  const r = spawnSync(finder, [cmd], { stdio: "ignore" });
-  return r.status === 0;
-}
-
-const SKIP = !which("bash") || !which("jq");
+const BASH = bashPath();
+const SKIP = !BASH || !which("jq");
 const SCRIPT = path.join(__dirname, "statusline.sh");
+
+logInterpreter("statusline-model-persist");
 
 function extractBlock() {
   // Normalize CRLF first: on a Windows checkout with core.autocrlf the
@@ -63,7 +61,7 @@ MODEL="$2"
 ${extractBlock()}
 `;
   try {
-    const r = spawnSync("bash", ["-c", script, "bash", tel, model], {
+    const r = spawnSync(BASH, ["-c", script, "bash", tel, model], {
       encoding: "utf8",
     });
     assert.strictEqual(r.status, 0, `block exited ${r.status}: ${r.stderr}`);

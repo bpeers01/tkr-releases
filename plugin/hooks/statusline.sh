@@ -448,6 +448,7 @@ if command -v tkr &>/dev/null; then
   TKR_SIG_ALLOW=" TKR_ACTIVE_SUBAGENTS TKR_BURN_ANOMALY TKR_CACHE_BUSTS"
   TKR_SIG_ALLOW="$TKR_SIG_ALLOW TKR_CACHE_BUST_LAST TKR_CACHE_HIT_PCT"
   TKR_SIG_ALLOW="$TKR_SIG_ALLOW TKR_CACHE_TTL TKR_DAILY_CLASS TKR_DAILY_UTIL_PCT"
+  TKR_SIG_ALLOW="$TKR_SIG_ALLOW TKR_DASH_LOCAL_URL TKR_DASH_TEAM_URL"
   TKR_SIG_ALLOW="$TKR_SIG_ALLOW TKR_DAYS_TO_CAP TKR_DELEGATE_VIA"
   TKR_SIG_ALLOW="$TKR_SIG_ALLOW TKR_FIVE_HOUR_PCT TKR_HOOK_BAD TKR_IDLE_SECS"
   TKR_SIG_ALLOW="$TKR_SIG_ALLOW TKR_IDLE_TIER TKR_LAST_CTX_K TKR_MISS_CENTS"
@@ -492,13 +493,25 @@ if command -v tkr &>/dev/null; then
           _tkr_val="${_tkr_val#\'}"
           _tkr_val="${_tkr_val%\'}"
           # Undo shellQuote's '\'' dance for embedded single quotes.
-          # The pattern is DOUBLE-QUOTED deliberately. The backslash-escaped
-          # form — ${_tkr_val//\'\\\'\'/\'} — matches on bash 5.2.21 (Linux,
-          # where this was written and where CI runs) but silently fails to
-          # substitute on bash 5.2.15 under Git for Windows, leaving the
-          # literal '\'' in the rendered value. Quoting the pattern makes it
-          # an unambiguous literal on both.
-          _tkr_val="${_tkr_val//"'\\''"/"'"}"
+          # The two operands are spelled differently on purpose; this is a
+          # three-way squeeze across bash 3.2.57 (macOS /bin/bash), 5.2.15
+          # (Git for Windows) and 5.2.21 (Linux, where CI runs).
+          #
+          # PATTERN — double-quoted. The backslash-escaped form
+          # — ${_tkr_val//\'\\\'\'/\'} — matches on 5.2.21 but silently fails
+          # to substitute on 5.2.15 under Git for Windows, leaving the literal
+          # '\'' in the rendered value. Quoting makes it an unambiguous
+          # literal on both.
+          #
+          # REPLACEMENT — a variable, never a quoted literal. bash 3.2 applies
+          # quote removal to the pattern operand but NOT to the replacement,
+          # so the "'" spelling substitutes the literal 3-char string "'" and
+          # renders it's as it"'"s (#379). A parameter expansion sidesteps the
+          # difference: its VALUE is used, so there are no quotes to remove
+          # and every version agrees. Keep it next to its use — inlining it
+          # back to a literal reintroduces the macOS bug silently.
+          _tkr_sq="'"
+          _tkr_val="${_tkr_val//"'\\''"/$_tkr_sq}"
           ;;
       esac
       declare "$_tkr_name=$_tkr_val" 2>/dev/null
@@ -1023,4 +1036,30 @@ if [ -n "$SAVED_K" ] && [ "$SAVED_K" -gt 0 ] 2>/dev/null; then
     SAVED_COLOR="$GREEN"
   fi
   printf " ${SAVED_COLOR}SAVED:%sk${RESET}" "$SAVED_K"
+fi
+
+# ── Dashboard link ───────────────────────────────────────────────────
+# Points developers at the live tkr dashboard. Team collector wins over
+# the local one when [team].url is configured (shared fleet view beats a
+# per-box one); local only when the loopback dashboard is actually
+# answering (TKR_DASH_LOCAL_URL is emitted empty otherwise — a dead link
+# is worse than no link); neither configured nor running just nudges the
+# start command. Fields come from the same 30s-cached
+# `tkr signals --statusline-fields` call as everything else above, so
+# this costs no extra `tkr` spawn.
+#
+# OSC 8 (\033]8;;URL\033\\LABEL\033]8;;\033\\) makes the URL segment
+# ctrl/cmd-clickable in terminals that support it (Windows Terminal,
+# iTerm2, kitty, WezTerm) and is inert elsewhere — the plain URL text
+# still renders and is always selectable/copyable regardless of terminal
+# support. Only wrap actual URLs, never the nudge text.
+osc8_link() {
+  printf '\033]8;;%s\033\\%s\033]8;;\033\\' "$1" "$2"
+}
+if [ -n "$TKR_DASH_TEAM_URL" ]; then
+  printf " ${GREEN}dash:%s${RESET}" "$(osc8_link "$TKR_DASH_TEAM_URL" "$TKR_DASH_TEAM_URL")"
+elif [ -n "$TKR_DASH_LOCAL_URL" ]; then
+  printf " ${GREEN}dash:%s${RESET}" "$(osc8_link "$TKR_DASH_LOCAL_URL" "$TKR_DASH_LOCAL_URL")"
+else
+  printf " ${DIM}dash:tkr dash${RESET}"
 fi

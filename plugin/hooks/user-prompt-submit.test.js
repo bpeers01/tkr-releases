@@ -562,6 +562,24 @@ test("shape never fires for subagent scope", () => {
   });
 });
 
+// INV-074 residue: shapeAdvisorContext previously hand-rolled only the two
+// undocumented mirrors (scope/top-level subagent_type) and never gated on
+// the documented agent_id/agent_type markers, so a build that ships only
+// those would have fired the shape nudge inside a subagent. Now routed
+// through lib/subagent-context.js's isSubagentContext, which covers all
+// four markers plus the neither-present default (inert → caller fires).
+test("shape gates on agent_id/agent_type, subagent_type, and neither (INV-074)", () => {
+  withTempStateDir(() => {
+    const fp = mkTelemetryFile(shapeTel({ tool_result_bytes: 200 * 1024, last_ctx_k: 90 }));
+    const { shapeAdvisorContext: shape } = freshUPSRequire();
+    assert.strictEqual(shape("sid-sub-aid", fp, undefined, { agent_id: "a1" }), "");
+    assert.strictEqual(shape("sid-sub-atype", fp, undefined, { agent_type: "Explore" }), "");
+    assert.strictEqual(shape("sid-sub-stype", fp, undefined, { subagent_type: "Explore" }), "");
+    // Neither marker present → not a subagent context → shape fires normally.
+    assert.ok(shape("sid-sub-neither", fp, undefined, {}).length > 0);
+  });
+});
+
 test("shape emits L7 fired row with correct trigger_state", () => {
   withTempStateDir((dir) => {
     const fp = mkTelemetryFile(shapeTel({ tool_result_bytes: 128 * 1024, last_ctx_k: 75, turn_count: 40, cap_units_total: 400 }));
@@ -1325,6 +1343,30 @@ test("route-inject: TKR_ROUTE_DISABLED=1 → no injection", () => {
   }
 });
 
+// INV-083: a system-injected envelope must never inject a route line —
+// even when a cache entry happens to exist for its exact text (it never
+// would in practice, since the hot path now skips classify for these
+// prompts entirely, but the injection guard itself must not depend on
+// that upstream skip to be correct).
+test("route-inject: system-envelope prompt → no injection even on a cache hit", () => {
+  const prompt = "<task-notification>\nBackground task finished.\n</task-notification>";
+  writeRouteCache(prompt, { task_class: "implement", effort: "high", why: "should never surface" });
+  try {
+    const { routeInjectContext } = freshUPSRequire();
+    const out = withRouteSyncOff(() => routeInjectContext({ prompt }));
+    assert.strictEqual(out, "", `system envelope must skip injection, got: ${out}`);
+  } finally {
+    removeRouteCache(prompt);
+  }
+});
+
+test("route-inject: system-reminder prompt → no injection", () => {
+  const prompt = "<system-reminder>\nStop hook keepalive.\n</system-reminder>";
+  const { routeInjectContext } = freshUPSRequire();
+  const out = withRouteSyncOff(() => routeInjectContext({ prompt }));
+  assert.strictEqual(out, "", `system-reminder envelope must skip injection, got: ${out}`);
+});
+
 // ──────────────────────────────────────────────────────────────────────
 // Regression: stale-injection on new session
 //
@@ -1417,7 +1459,12 @@ test("regression INV-039: payload sid beats stale env sid in spawned hook", () =
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-inv039-state-"));
   try {
     const { slugifyCwd } = require("./lib/statusline-path");
-    const slug = slugifyCwd(tmp);
+    // Slug from the REAL path, not the raw mkdtempSync one: on macOS
+    // os.tmpdir() returns /var/... and the spawned hook's process.cwd()
+    // (cwd: tmp, below) resolves the /var -> /private/var symlink, so
+    // getTelemetryPath's default-cwd slug would silently disagree with
+    // one built from `tmp` on this platform (#400).
+    const slug = slugifyCwd(fs.realpathSync(tmp));
     const sidStale = "sid-stale-pinned";
     const sidFresh = "sid-fresh-payload";
 

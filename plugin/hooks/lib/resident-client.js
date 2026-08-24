@@ -465,7 +465,13 @@ async function call(op, cmd, body, opts = {}) {
   }
 
   const budget = opts.timeoutMs || timeoutMs(env);
-  const res = await request(ep, { op, cmd: String(cmd ?? "") }, body, budget);
+  const header = { op, cmd: String(cmd ?? "") };
+  // #381 item 4 / #337 item 4: thread the real command exit code through so
+  // the Go side's filter-stdin stage 9 (success-pattern truncation) only
+  // fires on an actual success, not a hardcoded 0. Matches the Go JSON tag
+  // (resident.Request.ExitCode, `json:"exit_code,omitempty"`).
+  if (opts.exitCode) header.exit_code = opts.exitCode;
+  const res = await request(ep, header, body, budget);
 
   if (res === "timeout") {
     // A runtime that answers slowly is worse than none: it adds its deadline

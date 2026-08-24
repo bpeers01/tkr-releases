@@ -109,7 +109,7 @@ Override via `TKR_HANDOFF_TARGET` / `--target <path>`.
    shell parse error; transport-side chunking, not model-composed
    malformed content; the file-write-then-invoke sequence sidesteps
    the threshold unconditionally regardless of payload size), then
-   invoke `scripts/write-continue-here.sh < <scratch-file-path>` as a
+   invoke `bash scripts/write-continue-here.sh < <scratch-file-path>` as a
    separate Bash call. Writer is atomic (tmp + mv) and always writes
    (no confirm gate). Per-session filenames overwrite in place.
 4. **Emit** — writer records `{layer:"L2", event:"taken", outcome:
@@ -308,9 +308,21 @@ Invocations:
 - `/handoff prune --dry-run` — list only, no deletion.
 - `/handoff prune --older-than <days>` — override 7d threshold.
 
-Backed by `scripts/prune.sh`. JSON output for the interactive path
-lets the model render previews and confirm per-file before deleting
-selected ones via `prune.sh --delete <path>...`.
+Backed by `scripts/prune.sh`, invoked as `bash scripts/prune.sh`. JSON
+output for the interactive path lets the model render previews and
+confirm per-file before deleting selected ones via
+`bash scripts/prune.sh --delete <path>...`.
+
+Both backing scripts are invoked through `bash`, never executed
+directly, and must stay that way (#402). Every `.sh` in the repo is
+tracked `100644` under `core.fileMode=false`, so a shipped script is
+executable only if `install.sh` chmods it — and that chmod reaches one
+directory level, which `skills/*/scripts/` is not. A direct invocation
+here fails with `permission denied` on a normal install, and fails
+SILENTLY from the user's point of view: the skill reports its steps,
+the writer never runs, and the next session's `/continue` falls back to
+JSONL as though no handoff had been written. `bash <script>` is also
+how the keepalive shims are already invoked.
 
 ## Status
 

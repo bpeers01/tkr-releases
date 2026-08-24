@@ -29,6 +29,11 @@ If the contract is ambiguous, unsafe, or cannot be completed inside scope,
 return that limitation instead of expanding the task. Do not return
 command-by-command narration unless the coordinator asked for it.
 
+Never end this reply on narration — the final message is the deliverable;
+a narration-shaped ending is treated as truncated and re-sent. If tracked
+files were mutated, enumerate them with `git status --porcelain` output
+before the handoff block; state none if read-only.
+
 End your reply with this block and nothing after it:
 
 ```tkr-handoff

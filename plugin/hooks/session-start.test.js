@@ -806,9 +806,12 @@ function envWithoutSysprompt(stateDir) {
   return e;
 }
 
-test("TKR_SYSPROMPT=1 drops standing guidance, keeps STATE", () => {
+test("TKR_SYSPROMPT=1 drops standing guidance and the brevity block", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-ss-sp-on-"));
-  fs.writeFileSync(path.join(tmp, "brevity-mode"), "full");
+  // Deliberately NOT pre-writing brevity-mode: the default resolves to
+  // "full", so the flag file below can only exist if writeBrevityFlag still
+  // ran. Suppressing the block must not suppress the loader's side effects —
+  // the statusline reads that file.
   try {
     const res = spawnSync(process.execPath, [HOOK], {
       input: "{}",
@@ -822,10 +825,17 @@ test("TKR_SYSPROMPT=1 drops standing guidance, keeps STATE", () => {
         !res.stdout.includes("Before reading unfamiliar files"),
       `standing block must be suppressed when pinned:\n${res.stdout}`,
     );
-    // ...but per-session STATE still present.
+    // ...and so is brevity: the pinned prompt's `# Tone and output` section
+    // is the session's only voice spec. Shipping both was two contradicting
+    // specs at two authority levels, measured at zero effect.
     assert.ok(
-      res.stdout.includes("Brevity mode"),
-      `STATE (brevity) must still emit under the marker:\n${res.stdout}`,
+      !res.stdout.includes("Brevity mode"),
+      `brevity block must be suppressed when the prompt is pinned:\n${res.stdout}`,
+    );
+    assert.strictEqual(
+      fs.readFileSync(path.join(tmp, "brevity-mode"), "utf8"),
+      "full",
+      "writeBrevityFlag must still fire under the marker",
     );
   } finally {
     safeRmSync(tmp);
@@ -846,6 +856,12 @@ test("no TKR_SYSPROMPT → full standing block emitted (plain claude)", () => {
       res.stdout.includes("## tkr plugin active") &&
         res.stdout.includes("Before reading unfamiliar files"),
       `standing block must emit when prompt not pinned:\n${res.stdout}`,
+    );
+    // Plain `claude` has no pinned prompt, so this block is the only voice
+    // guidance the session gets — suppressing it there would leave none.
+    assert.ok(
+      res.stdout.includes("Brevity mode"),
+      `brevity block must still emit when the prompt is not pinned:\n${res.stdout}`,
     );
   } finally {
     safeRmSync(tmp);

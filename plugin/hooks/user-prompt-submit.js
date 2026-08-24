@@ -20,6 +20,10 @@ const os = require("os");
 const path = require("path");
 const { spawn, spawnSync } = require("child_process");
 const { spawnBounded } = require("./lib/spawn-bounded");
+// INV-085 step 2: breadcrumb tracer for the prompt hot path. Measurement
+// only, and OFF unless TKR_HOOK_STAGE_TRACE=1 — every entry point below is a
+// no-op then, so the marks cost one function call each on a normal run.
+const stageTrace = require("./lib/stage-trace");
 const { tkrSpawnArgv } = require("./lib/tkr-bin");
 const { readStdinWithTimeout, hooksDisabled } = require("./lib/stdin-with-timeout");
 const { rotateIfLarge } = require("./lib/rotate-jsonl");
@@ -29,6 +33,8 @@ const slashMarker = require("./lib/slash-marker");
 const { getSessionID } = require("./lib/session-id");
 const { activityTouch } = require("./lib/keepalive-activity");
 const { persistSessionEffort } = require("./lib/sessionstart/effort-log");
+const { isSubagentContext } = require("./lib/subagent-context");
+const { isSystemEnvelope } = require("./lib/route-source");
 
 const TKR_STATE_DIR = stateDir();
 
@@ -146,6 +152,108 @@ function spawnRecordPromptEvent(rawInput, sid) {
     child.unref();
   } catch {
     // Best-effort — never fail the hook for session telemetry
+  }
+}
+
+// isBrevityModeCommand / isBrevityOffCommand — the two brevity branches in
+// runMain, hoisted so the merged-spawn predicate below tests exactly what
+// those branches do. Duplicating the conditions is what would let the
+// predicate drift out of agreement with the control flow it predicts.
+function isBrevityModeCommand(firstToken) {
+  return firstToken === "/brevity" || firstToken === "/tkr-brevity";
+}
+
+function isBrevityOffCommand(promptLower) {
+  return promptLower.includes("stop brevity") || promptLower === "normal mode";
+}
+
+// mergedPromptSubmitEligible — can this prompt's record-event and route
+// classify be served by ONE process creation?
+//
+// The two spawns this fix merges are NOT co-located and cannot simply be
+// fused in place. spawnRecordPromptEvent runs at the top of runMain, on
+// every prompt; classifyRouteSync runs much later inside routeInjectContext
+// and is skipped for subagent dispatch, for TKR_ROUTE_DISABLED, and for the
+// brevity commands that return early before composeContext is reached.
+//
+// Fusing unconditionally at the top would classify prompts that are
+// deliberately excluded — writing route state and a decisions.jsonl row for
+// subagent dispatches and /brevity turns, corrupting the ledger that
+// docs/routing-outcomes.md governs (and failing
+// test/integration/route-subagent-skip.sh). Fusing at the bottom would drop
+// prompt events for every early return, punching a silent hole in PLAN-5
+// session continuity.
+//
+// So the merge is conditional: this predicate decides which single spawn a
+// prompt gets. Eligible prompts take the merged synchronous call; the rest
+// keep the detached record-event. Either way it is ONE creation, down from
+// two — the ineligible branch was already spawning once, because classify
+// was the half being skipped for it.
+function mergedPromptSubmitEligible(input, promptLower) {
+  // Legacy async path owns its own spawn shape — leave it alone.
+  if (process.env.TKR_ROUTE_SYNC === "0") return false;
+  if (process.env.TKR_ROUTE_DISABLED === "1") return false;
+  if (isSubagentContext(input)) return false;
+  if (!promptLower) return false;
+  const firstToken = promptLower.split(/\s+/)[0];
+  if (isBrevityModeCommand(firstToken) || isBrevityOffCommand(promptLower)) {
+    return false;
+  }
+  return true;
+}
+
+// spawnPromptSubmitMerged — the whole hot path in one process creation.
+// Returns true when the call completed, false when it was killed or could
+// not start.
+//
+// Synchronous by necessity: routeInjectContext reads the route state this
+// writes later in the SAME turn, so the classify half cannot be detached.
+// That makes the record-event half blocking too, which is the trade this
+// fix accepts. Its incremental cost is small — tracking.Open() is already
+// paid at startup by every tkr invocation, classify included, so the added
+// work is the inserts, not a second DB open — and it buys the elimination
+// of a 4-6s process creation.
+//
+// Timeout is classifyRouteSync's budget, not record-event's old detached
+// 5s: the merged call inherits the tighter of the two. The Go verb records
+// the event BEFORE classifying so a kill here costs the verdict, not the
+// event.
+//
+// Deliberately no fallback spawn on failure. Retrying the classify in its
+// own process would restore the two-creation shape precisely under the
+// stall this exists to remove; a killed merged call degrades to no
+// injection, exactly as a killed classify already did.
+function spawnPromptSubmitMerged(rawInput, sid, input) {
+  try {
+    const promptID = (input && input.prompt_id) || "";
+    const mergedArgv = ["hook", "prompt-submit"];
+    if (sid) mergedArgv.push("--session-id", sid);
+    if (promptID) mergedArgv.push("--prompt-id", promptID);
+    const { cmd, argv } = tkrSpawnArgv(mergedArgv);
+    const res = spawnSync(cmd, argv, {
+      input: rawInput,
+      timeout: ROUTE_SYNC_TIMEOUT_MS,
+      stdio: ["pipe", "ignore", "ignore"],
+      windowsHide: true,
+    });
+    // Same kill detection as classifyRouteSync (INV-073): ETIMEDOUT, or a
+    // truthy signal with null status — the same kill seen process-side.
+    const timedOut =
+      res &&
+      ((res.error && res.error.code === "ETIMEDOUT") ||
+        (res.signal && res.status === null));
+    if (timedOut) {
+      const { appendClassifyTimeout } = require("./lib/classify-timeout");
+      appendClassifyTimeout({
+        session_id: sid || "",
+        timeout_ms: ROUTE_SYNC_TIMEOUT_MS,
+        source: "user-prompt-submit-merged",
+      });
+      return false;
+    }
+    return !(res && res.error);
+  } catch {
+    return false;
   }
 }
 
@@ -470,8 +578,7 @@ function evalShapeTriggerB(cfg, state, m) {
 // stays user-invocable) and config advisor.shape.enabled=false.
 function shapeAdvisorContext(sid, telemetryPath, telOverride, input) {
   // Subagent dispatch never gets a shape nudge (same guard as routeInjectContext).
-  if (input && input.subagent_type && String(input.subagent_type).length > 0) return "";
-  if (input && input.scope === "subagent") return "";
+  if (isSubagentContext(input)) return "";
 
   // Kill switches, in order.
   if (process.env.TKR_HOOKS_DISABLED === "1") return "";
@@ -856,9 +963,23 @@ function readRouteCache(promptText) {
 // sha1-keyed cache makes misses the common case. Dogfood can tighten
 // with TKR_ROUTE_SYNC_TIMEOUT_MS once e2e-latency-bench.js has real
 // numbers; invalid values fall back to the default.
+//
+// CLIX-004: absent an explicit override, this is exactly the class of
+// hard-coded wall-clock spawn budget that policy exists for — a busy
+// self-hosted CI runner can push a trivial subprocess spawn past 250ms
+// under contention, and a killed spawn here means classifyRouteSync's
+// stub/binary never gets to write its cache entry (observed: CI failed
+// "routeInjectContext classifies synchronously on cache miss" 3x running
+// with duration clustered at ~250ms + fixed overhead, i.e. the kill
+// firing, not the classify itself being slow). Scaling by
+// TKR_BENCH_BUDGET_MULT — which real dev/user sessions never set — costs
+// production nothing and gives CI the same 3x headroom every other
+// absolute-time gate already gets.
 const ROUTE_SYNC_TIMEOUT_MS = (() => {
   const v = Number(process.env.TKR_ROUTE_SYNC_TIMEOUT_MS);
-  return Number.isFinite(v) && v > 0 ? v : 250;
+  if (Number.isFinite(v) && v > 0) return v;
+  const mult = Number(process.env.TKR_BENCH_BUDGET_MULT);
+  return 250 * (Number.isFinite(mult) && mult >= 1 ? mult : 1);
 })();
 
 function classifyRouteSync(promptText, input) {
@@ -872,6 +993,11 @@ function classifyRouteSync(promptText, input) {
     const routeArgv = ["route", "classify", promptText, "--json"];
     if (promptID) routeArgv.push("--prompt-id", promptID);
     const { cmd, argv } = tkrSpawnArgv(routeArgv);
+    // Separate mark: this is the second of the two per-prompt process
+    // creations, and its spawnSync timeout does not bound creation. Splitting
+    // it from `route-inject` is what makes the two spawns distinguishable in
+    // an abandoned row.
+    stageTrace.mark("route-classify");
     const res = spawnSync(cmd, argv, {
       timeout: ROUTE_SYNC_TIMEOUT_MS,
       stdio: "ignore",
@@ -1055,17 +1181,28 @@ function trackSustained(track, key) {
   return true;
 }
 
-function routeInjectContext(input, tel) {
+// opts.alreadyClassified — the merged `tkr hook prompt-submit` call
+// already ran `route classify` for this prompt in the same turn, so the
+// state read below is on disk and a second spawn would buy an identical
+// verdict at the price of the creation INV-085 exists to remove.
+function routeInjectContext(input, tel, opts) {
   try {
     // Skip: subagent dispatch (Agent/Task tool)
-    if (input && input.subagent_type && String(input.subagent_type).length > 0) return "";
-    // Skip: defensive scope check
-    if (input && input.scope === "subagent") return "";
+    if (isSubagentContext(input)) return "";
     // Skip: feature kill switch
     if (process.env.TKR_ROUTE_DISABLED === "1") return "";
 
     const promptText = (input && input.prompt) ? String(input.prompt).trim() : "";
     if (!promptText) return "";
+
+    // INV-083: a system-injected envelope (a background task-completion
+    // notification, a Stop-hook keepalive ping) carries no user intent
+    // to classify. The merged `tkr hook prompt-submit` path (the common
+    // case) already skips classify for these Go-side; this guard covers
+    // the legacy TKR_ROUTE_SYNC=0 spawn path below, which builds its own
+    // argv and would otherwise still pay a subprocess for a verdict that
+    // can never mean anything.
+    if (isSystemEnvelope(promptText)) return "";
 
     // The per-session state is a TRANSPORT for this invocation, not a
     // prompt cache — so classify first and read the result, rather than
@@ -1092,7 +1229,9 @@ function routeInjectContext(input, tel) {
         return "";
       }
     } else {
-      classifyRouteSync(promptText, input);
+      if (!(opts && opts.alreadyClassified)) {
+        classifyRouteSync(promptText, input);
+      }
       parsed = readSessionVerdict(input, promptText, tel);
       // Only after our own classification failed to produce state does a
       // pre-migration binary's cache entry become the best available
@@ -1209,8 +1348,7 @@ function detectActiveEffort(input) {
 
 function shapeNudgeContext(input, tel) {
   try {
-    if (input && input.subagent_type && String(input.subagent_type).length > 0) return "";
-    if (input && input.scope === "subagent") return "";
+    if (isSubagentContext(input)) return "";
     if (process.env.TKR_ROUTE_DISABLED === "1") return "";
 
     const promptText = (input && input.prompt) ? String(input.prompt).trim() : "";
@@ -1542,8 +1680,7 @@ function workRouteContext(input, tel) {
 function computeWorkRouteDirective(input, tel) {
   try {
     // A worker must never be told to spawn a worker.
-    if (input && input.subagent_type && String(input.subagent_type).length > 0) return "";
-    if (input && input.scope === "subagent") return "";
+    if (isSubagentContext(input)) return "";
 
     // Kill switches. TKR_ROUTE_DISABLED is included because a plan is a
     // product of classification: disabling routing must not leave the one
@@ -1829,8 +1966,28 @@ function runMain(input) {
       process.env.TKR_SESSION_ID = earlySid;
     }
 
-    // Fire-and-forget: record prompt event for session continuity (PLAN-5).
-    spawnRecordPromptEvent(input, earlySid);
+    // Open the stage trace before the first process creation. Ordering is
+    // the whole point: spawnRecordPromptEvent below is the FIRST spawn on this
+    // path, so under a process-creation stall it is the one that absorbs it,
+    // and a tracer opened after it would attribute the stall to whatever ran
+    // next (INV-085, corrected suspect ordering 2026-08-22).
+    stageTrace.start(earlySid, "user-prompt-submit");
+
+    // ONE process creation for this prompt (INV-085 step 3). Eligible
+    // prompts get the merged call, which records the event and classifies
+    // the route in a single process; everything else keeps the detached
+    // record-event, because classify was never going to run for it anyway.
+    // routeInjectContext below is told which happened, so it does not spawn
+    // a second classify for a verdict already on disk.
+    let mergedRan = false;
+    if (mergedPromptSubmitEligible(data, prompt)) {
+      stageTrace.mark("spawn:prompt-submit");
+      mergedRan = spawnPromptSubmitMerged(input, earlySid, data);
+    } else {
+      // Fire-and-forget: record prompt event for session continuity (PLAN-5).
+      stageTrace.mark("spawn:record-event");
+      spawnRecordPromptEvent(input, earlySid);
+    }
 
     // Issue #123: refresh the standing active-effort snapshot every turn,
     // not just at SessionStart (session-start.js also calls this). `tkr
@@ -1849,6 +2006,7 @@ function runMain(input) {
     // prompt timed out the whole UserPromptSubmit group under Windows
     // multi-session load. MUST stay above the brevity early-returns:
     // a /brevity turn is genuine user activity too. Best-effort.
+    stageTrace.mark("keepalive-touch");
     activityTouch({ rawInput: input, data, sid: earlySid });
 
     // Tombstone the work-route receipt for THIS prompt, before any branch
@@ -1878,7 +2036,7 @@ function runMain(input) {
     // pre-v3.13; see issue #8). Match on exact token so /brevityfoo doesn't fire.
     const parts = prompt.split(/\s+/);
     const cmd = parts[0];
-    if (cmd === "/brevity" || cmd === "/tkr-brevity") {
+    if (isBrevityModeCommand(cmd)) {
       const requested = parts[1] || DEFAULT_MODE;
       const mode = VALID_MODES.includes(requested) ? requested : DEFAULT_MODE;
       setBrevityMode(mode);
@@ -1891,7 +2049,7 @@ function runMain(input) {
       return;
     }
 
-    if (prompt.includes("stop brevity") || prompt === "normal mode") {
+    if (isBrevityOffCommand(prompt)) {
       setBrevityMode("off");
       writeInjectionLogRow(data, "");
       return;
@@ -1906,6 +2064,7 @@ function runMain(input) {
     // same file (6-8 reads per UserPromptSubmit). readStatusline returns
     // {} on failure (vs getTel returning null) so we pass null to each
     // helper when the read failed — they'll bail out the same way.
+    stageTrace.mark("statusline-read");
     const telRaw = readStatusline();
     const tel =
       telRaw && Object.keys(telRaw).length > 0 ? telRaw : null;
@@ -1916,6 +2075,7 @@ function runMain(input) {
     // - No pressureContext (replaced by state line + tier-cross).
     // - Cold-resume / L1 / L2 kept (orthogonal event detectors per §3.2).
     // - Composable state line + rate-tier advisories.
+    stageTrace.mark("context-detectors");
     contextParts.push(coldResumeContext(undefined, tel));
     contextParts.push(l1IdleGapContext(sid, undefined, tel));
     contextParts.push(l2HandoffContext(sid, undefined, tel));
@@ -1928,7 +2088,8 @@ function runMain(input) {
     // synchronously on a miss so this prompt's verdict lands this turn.
     // `tel` carries the session's model_id so a verdict written before a
     // mid-session /model switch is rejected rather than reused.
-    contextParts.push(routeInjectContext(data, tel));
+    stageTrace.mark("route-inject");
+    contextParts.push(routeInjectContext(data, tel, { alreadyClassified: mergedRan }));
     // Shape nudge — matrix-aware over-effort signal. Silent unless
     // active effort exceeds the (shape × model) recommendation.
     contextParts.push(shapeNudgeContext(data, tel));
@@ -1937,11 +2098,18 @@ function runMain(input) {
     // than spawning its own, so running earlier would find nothing.
     contextParts.push(workRouteContext(data, tel));
 
+    stageTrace.mark("emit");
     const text = composeContext(contextParts);
     emitAdditionalContext(text);
     writeInjectionLogRow(data, text, undefined, undefined, tel);
   } catch {
     // Malformed input — ignore silently
+  } finally {
+    // Closes the trace on EVERY exit — the brevity early-returns above and the
+    // malformed-input catch included. A run that leaves its in-flight file
+    // behind is read by the next run as a kill, so an unclosed trace would
+    // manufacture a false `abandoned` row.
+    stageTrace.done();
   }
 }
 

@@ -106,9 +106,15 @@ test("sweep deletes the legacy no-sid orphan unconditionally (2026-05-25)", () =
 
     const { sweepStaleStatuslineFiles } = loadFresh();
     const { slugifyCwd } = require("../statusline-path");
+    // Slug from process.cwd(), not the pre-chdir projDir string: on
+    // macOS os.tmpdir()/mkdtempSync return a /var/... path that chdir +
+    // process.cwd() resolves to /private/var/... (symlink), and the
+    // code under test slugs process.cwd() internally. Slugging projDir
+    // here would silently target a filename sweepStaleStatuslineFiles
+    // never constructs (#400).
     const legacy = path.join(
       tmp,
-      "claude-statusline-" + slugifyCwd(projDir) + ".json"
+      "claude-statusline-" + slugifyCwd(process.cwd()) + ".json"
     );
     fs.writeFileSync(legacy, '{"seven_day_pct":70}');
     // Give it a FRESH mtime — the mtime-based STALE_MS gate must not

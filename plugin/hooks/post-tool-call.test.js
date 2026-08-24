@@ -511,3 +511,116 @@ test("PostToolUse persists input.effort.level to effort-<sid>.json", () => {
     assert.ok(parsed.ts, "ts must be stamped so effortAgeSecs means last-observed");
   });
 });
+
+// ────────────────────────────────────────────────────────────────────
+// #381 item 25: passthrough reasons recorded to the compression
+// telemetry stream. Spawns the real hook (like the effort test above)
+// so the assertions exercise the actual decision points in processEvent,
+// not a re-implementation of them.
+
+function runPostToolHook(event, envOverrides, dir) {
+  const { spawnSync } = require("node:child_process");
+  const res = spawnSync(process.execPath, [path.join(__dirname, "post-tool-call.js")], {
+    input: JSON.stringify(event),
+    env: {
+      ...process.env,
+      TKR_STATE_DIR: dir,
+      TKR_HOOKS_DISABLED: "",
+      TKR_RESIDENT_ENABLED: "",
+      ...envOverrides,
+    },
+    encoding: "utf8",
+  });
+  assert.strictEqual(res.status, 0, `hook exited nonzero: ${res.stderr}`);
+  const historyPath = path.join(dir, "telemetry-history.jsonl");
+  if (!fs.existsSync(historyPath)) return [];
+  return fs
+    .readFileSync(historyPath, "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => JSON.parse(l));
+}
+
+function bashEvent(command, stdout, extra) {
+  return {
+    session_id: "sid-passthrough",
+    hook_event_name: "PostToolUse",
+    tool_name: "Bash",
+    tool_input: { command },
+    tool_response: { stdout, is_error: false },
+    ...extra,
+  };
+}
+
+test("#381 item 25: host_cap_exceeded recorded when output exceeds the host cap before filtering is attempted", () => {
+  withTempStateDir((dir) => {
+    const stdout = "x".repeat(200);
+    const entries = runPostToolHook(
+      bashEvent("some-command-with-big-output", stdout),
+      { BASH_MAX_OUTPUT_LENGTH: "50", TKR_COUNTERFACTUAL_CAP_BYTES: "" },
+      dir,
+    );
+    const hit = entries.find((e) => e.stream === "compression" && e.reason === "host_cap_exceeded");
+    assert.ok(hit, `expected a host_cap_exceeded compression entry, got: ${JSON.stringify(entries)}`);
+    assert.strictEqual(hit.bytes_saved, 0);
+  });
+});
+
+test("#381 item 25: already_routed_tkr recorded for a command the model typed as `tkr ...` itself", () => {
+  withTempStateDir((dir) => {
+    const stdout = "y".repeat(200);
+    const entries = runPostToolHook(
+      bashEvent("tkr status", stdout),
+      { BASH_MAX_OUTPUT_LENGTH: "", TKR_COUNTERFACTUAL_CAP_BYTES: "" },
+      dir,
+    );
+    const hit = entries.find((e) => e.stream === "compression" && e.reason === "already_routed_tkr");
+    assert.ok(hit, `expected an already_routed_tkr compression entry, got: ${JSON.stringify(entries)}`);
+    assert.strictEqual(hit.bytes_saved, 0);
+  });
+});
+
+test("#381 item 25: no_matching_filter recorded as the generic fallback when nothing matched", () => {
+  withTempStateDir((dir) => {
+    const stdout = "z".repeat(200);
+    const entries = runPostToolHook(
+      bashEvent("some-totally-unmatched-fictitious-command-xyz --flag", stdout),
+      {
+        // Force the filter-stdin spawn leg to fail deterministically —
+        // resolveTkrBin picks up TKR_BIN unconditionally, and a path that
+        // does not exist means the spawn throws ENOENT regardless of
+        // whether a real tkr binary happens to be on this machine's PATH.
+        TKR_BIN: path.join(dir, "nonexistent-tkr-binary"),
+        BASH_MAX_OUTPUT_LENGTH: "",
+        TKR_COUNTERFACTUAL_CAP_BYTES: "",
+      },
+      dir,
+    );
+    const hit = entries.find((e) => e.stream === "compression" && e.reason === "no_matching_filter");
+    assert.ok(hit, `expected a no_matching_filter compression entry, got: ${JSON.stringify(entries)}`);
+    assert.strictEqual(hit.bytes_saved, 0);
+  });
+});
+
+test("#381 item 25: search_output_already_clean recorded when tkr-search output has nothing to strip", () => {
+  withTempStateDir((dir) => {
+    // A chained command (`cd . &&`) is used rather than a bare `tkr
+    // search ...` because the latter is caught by the earlier
+    // already_routed_tkr branch (/^\s*tkr\s/ matches the start of the
+    // command) before this hook ever reaches the search-specific path —
+    // see hooks/CLAUDE.md's own note that the prefix check is close to
+    // dead code with respect to its stated purpose. Plain (non-JSON)
+    // stdout makes stripSearchInternals's JSON.parse fail and return the
+    // text unchanged, which is the "already clean" case.
+    const stdout = "not json output ".repeat(10);
+    const entries = runPostToolHook(
+      bashEvent("cd . && tkr search foo", stdout),
+      { BASH_MAX_OUTPUT_LENGTH: "", TKR_COUNTERFACTUAL_CAP_BYTES: "" },
+      dir,
+    );
+    const hit = entries.find((e) => e.stream === "search" && e.reason === "search_output_already_clean");
+    assert.ok(hit, `expected a search_output_already_clean entry, got: ${JSON.stringify(entries)}`);
+    assert.strictEqual(hit.bytes_saved, 0);
+  });
+});

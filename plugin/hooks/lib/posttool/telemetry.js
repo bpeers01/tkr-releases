@@ -65,17 +65,27 @@ function hostOutputCapBytes() {
 // bytesAfter plays no part in that fact: clamping it too (the previous
 // symmetric clamp) still booked a positive `cap - bytesAfter` saving for
 // an event that never happened.
-function recordTelemetry(stream, bytesBefore, bytesAfter, detail) {
+//
+// #381 item 25: `reason` is an optional short enum string a caller passes
+// to explain a zero-saving event that is still worth recording — e.g. a
+// compression-stream passthrough because no filter matched. host_cap_exceeded
+// (computed here) always wins over a caller-supplied reason since it is the
+// more precise explanation whenever both are true. Callers that pass no
+// reason and have nothing saved keep the pre-existing silent-skip behavior —
+// this is additive, not a new obligation on every call site.
+function recordTelemetry(stream, bytesBefore, bytesAfter, detail, reason) {
   try {
     const cap = hostOutputCapBytes();
     const hostCapExceeded = cap > 0 && bytesBefore > cap;
     const saved = hostCapExceeded
       ? 0
       : Math.max(0, bytesBefore - bytesAfter);
-    // Forced past the zero-saving skip when the host cap explains the
-    // zero: that case is diagnostically interesting (compression ran and
-    // was thrown away) rather than "nothing happened here".
-    if (saved === 0 && !hostCapExceeded) return;
+    const effectiveReason = hostCapExceeded ? "host_cap_exceeded" : reason;
+    // Forced past the zero-saving skip when there's a reason that explains
+    // the zero: that case is diagnostically interesting (compression ran
+    // and was thrown away, or was skipped for a known cause) rather than
+    // "nothing happened here".
+    if (saved === 0 && !effectiveReason) return;
     const entry = {
       stream: stream,
       bytes_saved: saved,
@@ -83,7 +93,7 @@ function recordTelemetry(stream, bytesBefore, bytesAfter, detail) {
       detail: detail.substring(0, 80),
       timestamp: new Date().toISOString(),
     };
-    if (hostCapExceeded) entry.reason = "host_cap_exceeded";
+    if (effectiveReason) entry.reason = effectiveReason;
     const dir = stateDir();
     const historyPath = path.join(dir, "telemetry-history.jsonl");
     fs.mkdirSync(dir, { recursive: true });

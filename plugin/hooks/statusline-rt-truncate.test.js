@@ -21,14 +21,12 @@
 const test = require("node:test");
 const assert = require("node:assert");
 const { spawnSync } = require("node:child_process");
+const { bashPath, logInterpreter } = require("./lib/bash-interpreter");
 
-function which(cmd) {
-  const finder = process.platform === "win32" ? "where" : "which";
-  const r = spawnSync(finder, [cmd], { stdio: "ignore" });
-  return r.status === 0;
-}
+const BASH = bashPath();
+const HAVE_BASH = !!BASH;
 
-const HAVE_BASH = which("bash");
+logInterpreter("statusline-rt-truncate");
 
 // Mirror of the RT_BADGE block in hooks/statusline.sh.
 const RT_SNIPPET = `
@@ -55,7 +53,7 @@ printf '%s' "$RT_BADGE"
 `;
 
 function runRT(routeClass, routeEffort) {
-  const r = spawnSync("bash", ["-c", RT_SNIPPET], {
+  const r = spawnSync(BASH, ["-c", RT_SNIPPET], {
     env: Object.assign({}, process.env, {
       TKR_ROUTE_CLASS: routeClass,
       TKR_ROUTE_EFFORT: routeEffort,

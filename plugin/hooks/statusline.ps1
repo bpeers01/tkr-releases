@@ -302,6 +302,8 @@ $SavedK = 0
 $RouteClass = ""
 $RouteEffort = ""
 $WorkBadge = ""
+$DashTeamUrl = ""
+$DashLocalUrl = ""
 $HookBad = $false
 $SevenDayResetsLabel = ""
 $FiveHourResetsLabel = ""
@@ -392,6 +394,10 @@ try {
                 # route.WorkPlan.Badge. Empty means no native-worker plan
                 # for this prompt — including every stay_main verdict.
                 $WorkBadge = $Matches[1].Trim("'")
+            } elseif ($line -match '^TKR_DASH_TEAM_URL=(.*)$') {
+                $DashTeamUrl = $Matches[1].Trim("'")
+            } elseif ($line -match '^TKR_DASH_LOCAL_URL=(.*)$') {
+                $DashLocalUrl = $Matches[1].Trim("'")
             }
         }
     }
@@ -487,4 +493,20 @@ if ($RouteEffort) {
     }
     $rtLabel = if ($rtClass) { "${rtClass}>${RouteEffort}" } else { $RouteEffort }
     Write-Host " RT:${rtLabel}" -NoNewline -ForegroundColor DarkGray
+}
+
+# ── Dashboard link (parity with statusline.sh) ──────────────────────
+# Team collector wins over the local dashboard when [team].url is
+# configured; local only when the loopback dashboard actually answered
+# (TKR_DASH_LOCAL_URL empty otherwise); neither → nudge the start
+# command. No OSC 8 wrapping here — unlike statusline.sh, colors in this
+# script go through -ForegroundColor rather than raw ANSI, and Windows
+# PowerShell hosts are not guaranteed to pass raw hyperlink escapes
+# through cleanly. Plain text is still fully selectable/copyable.
+if ($DashTeamUrl) {
+    Write-Host " dash:${DashTeamUrl}" -NoNewline -ForegroundColor Green
+} elseif ($DashLocalUrl) {
+    Write-Host " dash:${DashLocalUrl}" -NoNewline -ForegroundColor Green
+} else {
+    Write-Host " dash:tkr dash" -NoNewline -ForegroundColor DarkGray
 }

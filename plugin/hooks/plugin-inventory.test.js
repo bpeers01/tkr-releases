@@ -129,3 +129,52 @@ test("PLUGIN-INV: every ${CLAUDE_PLUGIN_ROOT} reference in SKILL.md has a backin
   }
   assert.deepStrictEqual(problems, [], problems.join("; "));
 });
+
+// #402: a SKILL.md must invoke its OWN nested backing scripts through
+// `bash`, never directly.
+//
+// Every .sh in the repo is tracked 100644 under core.fileMode=false, so a
+// shipped script is executable only if install.sh chmods it — and that
+// chmod reaches exactly one directory level (scripts/, adapters/, hooks/).
+// `skills/<name>/scripts/` is two levels down and is never reached, so a
+// direct invocation dies with `permission denied` on every normal install.
+//
+// The failure is silent to the user, which is what makes it worth a test
+// rather than a code review: the skill reports its steps, the writer never
+// runs, and the next session's /continue falls back to JSONL exactly as if
+// no handoff had been written. Observed live on macOS (#402).
+//
+// Scope is deliberately the skill's own scripts/ dir. A reference to the
+// top-level scripts/ (delegate.sh, manage-queue.sh) is fine — install.sh
+// does chmod those — so the check resolves each reference against the
+// skill directory and ignores anything that is not there.
+test("SKILL.md invokes its own nested scripts through bash (#402)", () => {
+  const problems = [];
+  for (const tier of TIERS) {
+    for (const name of skillDirs(tier)) {
+      const skillDir = path.join(repoRoot, tier, name);
+      const md = path.join(skillDir, "SKILL.md");
+      if (!fs.existsSync(md)) continue;
+      const body = fs.readFileSync(md, "utf8");
+
+      for (const [, span] of body.matchAll(/`([^`\n]+)`/g)) {
+        const tokens = span.trim().split(/\s+/);
+        // A single token is a reference ("Backed by `scripts/prune.sh`"),
+        // not a command line. Arguments or a redirect make it an
+        // invocation.
+        if (tokens.length < 2) continue;
+        const first = tokens[0].replace(/^\.\//, "");
+        if (!first.endsWith(".sh")) continue;
+        // Only this skill's own nested scripts are at risk.
+        const owned = path.join(skillDir, first);
+        if (!fs.existsSync(owned)) continue;
+        problems.push(
+          `${tier}/${name}: SKILL.md invokes \`${span.trim()}\` directly — ` +
+            `install.sh never chmods ${tier}/${name}/${first} (one level deep), ` +
+            `so this is 'permission denied' on a real install. Use \`bash ${span.trim()}\`.`,
+        );
+      }
+    }
+  }
+  assert.deepStrictEqual(problems, [], problems.join("; "));
+});

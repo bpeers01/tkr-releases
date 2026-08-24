@@ -102,6 +102,27 @@ test("returns empty for subagent scope", () => {
   });
 });
 
+// INV-074 residue: this skip previously hand-rolled only the two
+// undocumented mirrors (subagent_type/scope) and never gated on the
+// documented agent_id/agent_type markers. Now routed through
+// lib/subagent-context.js's isSubagentContext.
+test("returns empty for agent_id/agent_type, fires for neither marker (INV-074)", () => {
+  const prompt = "test-agenttype-gate";
+  const fp = writeCache(prompt, {
+    shape: "frontier",
+    recommend_effort: "",
+    escalate_model: "claude-sonnet-5",
+  });
+  try {
+    withEffort("", () => {
+      assert.strictEqual(shapeNudgeContext({ prompt, agent_id: "a1" }), "");
+      assert.strictEqual(shapeNudgeContext({ prompt, agent_type: "Explore" }), "");
+      // Neither marker present → not a subagent context → nudge fires normally.
+      assert.match(shapeNudgeContext({ prompt }), /claude-sonnet-5 recommended/);
+    });
+  } finally { cleanup(fp); }
+});
+
 test("returns empty when TKR_ROUTE_DISABLED=1", () => {
   const prev = process.env.TKR_ROUTE_DISABLED;
   process.env.TKR_ROUTE_DISABLED = "1";
@@ -405,9 +426,19 @@ fs.writeFileSync(
 );
 `, { mode: 0o755 });
   const prevPath = process.env.PATH;
+  const prevBin = process.env.TKR_BIN;
   const prevCacheDir = process.env.TKR_ROUTE_CACHE_DIR;
   const prevSync = process.env.TKR_ROUTE_SYNC;
   process.env.PATH = binDir + path.delimiter + prevPath;
+  // hooks/lib/tkr-bin.js's resolveTkrBin checks TKR_BIN, THEN the standard
+  // install location ($HOME/.local/bin/tkr), and only falls back to a PATH
+  // search last. A PATH prepend alone is not enough to guarantee this stub
+  // wins: on any runner with a real tkr already at the standard location
+  // (true of the self-hosted CI runner — persistent HOME across jobs), that
+  // real binary resolves first, classifies for real, and never produces the
+  // "(stub)" cache entry this test asserts on. Pin TKR_BIN directly, same
+  // pattern as hooks/lib/sessionstart/resident-warm.test.js.
+  process.env.TKR_BIN = path.join(binDir, "tkr");
   process.env.TKR_ROUTE_CACHE_DIR = tmp;
   // This is the one test that WANTS the synchronous classify — the stub
   // above is what gets classified — so lift the file-level pin.
@@ -417,6 +448,8 @@ fs.writeFileSync(
     assert.match(out, /\[tkr route: localized_edit → effort=low \(stub\)\]/);
   } finally {
     process.env.PATH = prevPath;
+    if (prevBin === undefined) delete process.env.TKR_BIN;
+    else process.env.TKR_BIN = prevBin;
     if (prevCacheDir === undefined) delete process.env.TKR_ROUTE_CACHE_DIR;
     else process.env.TKR_ROUTE_CACHE_DIR = prevCacheDir;
     if (prevSync === undefined) delete process.env.TKR_ROUTE_SYNC;

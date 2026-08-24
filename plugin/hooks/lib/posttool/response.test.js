@@ -52,6 +52,36 @@ test("makeResponse uses Claude Code's shape-preserving replacement field", () =>
   );
 });
 
+test("makeResponse writes a bare-array (live MCP) tool_response back as an array", () => {
+  const event = {
+    tool_name: "mcp__probe__big_payload",
+    tool_response: [{ type: "text", text: "original" }],
+  };
+
+  const response = makeResponse(
+    event,
+    { field: "content", text: "original", rootArray: true },
+    "replacement",
+    "context",
+  );
+
+  assert.deepEqual(response, {
+    hookSpecificOutput: {
+      hookEventName: "PostToolUse",
+      updatedToolOutput: [{ type: "text", text: "replacement" }],
+      additionalContext: "context",
+    },
+  });
+  // The regression this guards: spreading an array into an object literal
+  // yields {"0":{...}}, which serializes as a JSON object and Claude Code
+  // silently ignores. Array-ness is the thing that must survive.
+  assert.ok(Array.isArray(response.hookSpecificOutput.updatedToolOutput));
+  assert.equal(
+    JSON.stringify(response.hookSpecificOutput.updatedToolOutput)[0],
+    "[",
+  );
+});
+
 test("exploration nudge uses the same PostToolUse replacement contract", () => {
   withTempStateDir(() => {
     const event = {
