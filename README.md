@@ -9,6 +9,31 @@ It works on four fronts at once: compresses bloated tool output before Claude re
 
 Built for Claude Code on **Pro, Max, or Team**. API users get the same wins paid in dollars instead of cap headroom (`tkr gain --economics`). Binaries ship every release for macOS, Linux, and Windows; automated release-validation smoke testing currently covers Linux and Windows only (see Requirements). Single static binary, zero runtime dependencies.
 
+> **What's new in v5.25.0** — Claude Code can now read a database
+> directly and safely: a new `tkr_sql` tool answers read-only queries
+> against SQLite or Postgres, but only after you've separately approved
+> the exact connection it's using — approval is tied to the database's
+> identity, so pointing it somewhere else re-locks it automatically, and
+> every query runs through a database-level read-only guarantee rather
+> than a keyword filter that could be tricked. The experimental Codex
+> support (opt-in, off by default) grows a lot in this release: it can
+> register itself with Codex's MCP config, hook into Codex's tool calls,
+> survive a session restart or context-compaction without losing its
+> place, offer manual handoff/continue commands, and report honest usage
+> and status numbers instead of guessing. The document-search feature for
+> uploaded files in Cowork got noticeably more reliable after a live test
+> run surfaced five separate ways it could quietly skip a file instead of
+> indexing it — those are all fixed now, along with a real search bug
+> where `tkr search --k 10` (the long form) was silently ignored. Two
+> reliability fixes: resuming a session used to sometimes only read part
+> of a long handoff file and summarize the partial version without saying
+> so, and writing a handoff from outside your project folder could save
+> it somewhere `/continue` would never look — both now fail loudly or
+> just work correctly instead of failing silently. Also new: an
+> experimental tool that lets Claude apply precise multi-part edits to a
+> single file transactionally (off by default).
+> [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
+>
 > **What's new in v5.24.0** — If your team runs tkr on more than one
 > machine, the live dashboard can now show all of them at once instead of
 > just the one it's running on — point it at a shared collector and it'll
@@ -348,10 +373,10 @@ Claude Code, Gemini CLI, and Cursor rewrite commands automatically — no manual
 
 ```bash
 # macOS / Linux / Git Bash
-TKR_VERSION=v5.24.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
+TKR_VERSION=v5.25.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.24.0
+irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.25.0
 ```
 
 #### Manual download
@@ -488,6 +513,23 @@ into a compressed JSON dump without re-fetching the raw payload.
 `within=` is MCP-only; there is no `--within` CLI flag.
 
 Available to Claude Code via the `tkr_search`, `tkr_read`, and `tkr_graph` MCP tools. The graph backend (SQLite + FTS5 over symbol names, qualified names, signatures, and docstrings) also exposes `op=implementors` (v5) for interface → satisfying-type lookups, `op=impact` for "what breaks if I change file Y?", and per-edge resolver provenance for debuggable confidence scores. Run `tkr graph install-hooks` once to keep the index fresh across branch swaps.
+
+---
+
+### SQL Introspection
+
+Ask Claude to query a database directly, read-only. A connection has to
+be defined in your own config — never a project file, since a cloned
+repo could smuggle one in — and then separately approved by you.
+Pointing an approved connection at a different database un-approves it
+automatically. Works with SQLite and Postgres; every query runs through
+a database-level read-only guarantee, not just a keyword filter.
+
+```bash
+tkr sql list            # see your connections and whether they're approved
+tkr sql trust <name>    # approve one
+tkr sql test <name>     # check every safety gate without opening the database
+```
 
 ---
 
@@ -708,7 +750,7 @@ When installed as a plugin, tkr registers 9 core on-demand skills invocable with
 ## Verify Installation
 
 ```bash
-tkr --version             # expected: tkr v5.24.0 (or newer)
+tkr --version             # expected: tkr v5.25.0 (or newer)
 tkr doctor                # health check — PASS/WARN/FAIL rows; exit 0 or 2
 tkr verify                # run built-in filter tests (342 should pass)
 ```
