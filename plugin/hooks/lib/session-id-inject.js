@@ -18,12 +18,20 @@
 // instead of degrading to the existing pid fallback. `cmd/tkr/main.go`
 // reads the flag and Setenv's TKR_SESSION_ID from it before any other
 // session-id resolution runs.
+//
+// #584: the same shape now also carries `--tool-use-id` and `--prompt-id`
+// so the `commands`/`compression_events` rows the spawned process writes
+// can be joined back to the OTel tool_result/prompt that caused them
+// (report docs/reports/2026-08-26-tooluse-join-feasibility.md §5). Each id
+// is independent — a payload missing one still gets the other(s) attached.
 
-// Only a session id shaped like this is trusted enough to interpolate into
-// a shell command line. Anything else (empty, the "default" no-id sentinel
+// Only an id shaped like this is trusted enough to interpolate into a
+// shell command line. Anything else (empty, the "default" no-id sentinel
 // used elsewhere in this hook, or something with shell metacharacters) is
-// left unattached — tkr's own pid fallback still applies, so refusing here
-// only forgoes the fix for that one invocation, never breaks the command.
+// left unattached — tkr's own fallback still applies, so refusing here
+// only forgoes the fix for that one id, never breaks the command. Verified
+// admissible for real tool_use_id values: SAFE_SID already matches
+// `toolu_012pUuAJ4A8Yq1vHj1aezfav` unchanged.
 const SAFE_SID = /^[A-Za-z0-9_-]+$/;
 
 // Matches the start of a `tkr` invocation inside a (possibly compound)
@@ -45,12 +53,37 @@ const RW_SEGMENT_START =
 // unchanged when `sid` is missing or unsafe, or `rewritten` is not a
 // non-empty string.
 function injectSessionID(rewritten, sid) {
+  return injectIDs(rewritten, { sid });
+}
+
+// injectIDs generalizes injectSessionID (#584) to also attach
+// `--tool-use-id` and `--prompt-id`, each independently: any of `sid`,
+// `toolUseId`, `promptId` may be omitted or unsafe without affecting the
+// others. Flags are emitted in a fixed order (session, tool-use, prompt)
+// so the attached string is deterministic. Returns `rewritten` unchanged
+// when it is not a non-empty string, or when none of the three ids are
+// safe to attach.
+function injectIDs(rewritten, ids) {
   if (typeof rewritten !== "string" || rewritten === "") return rewritten;
-  if (typeof sid !== "string" || !SAFE_SID.test(sid)) return rewritten;
+  const { sid, toolUseId, promptId } = ids || {};
+
+  const parts = [];
+  if (typeof sid === "string" && SAFE_SID.test(sid)) {
+    parts.push(`--session-id ${sid}`);
+  }
+  if (typeof toolUseId === "string" && SAFE_SID.test(toolUseId)) {
+    parts.push(`--tool-use-id ${toolUseId}`);
+  }
+  if (typeof promptId === "string" && SAFE_SID.test(promptId)) {
+    parts.push(`--prompt-id ${promptId}`);
+  }
+  if (parts.length === 0) return rewritten;
+
+  const flags = parts.join(" ");
   return rewritten.replace(
     RW_SEGMENT_START,
-    (_match, sep, ws, prefix) => `${sep}${ws}${prefix}tkr --session-id ${sid}`,
+    (_match, sep, ws, prefix) => `${sep}${ws}${prefix}tkr ${flags}`,
   );
 }
 
-module.exports = { injectSessionID, SAFE_SID };
+module.exports = { injectSessionID, injectIDs, SAFE_SID };

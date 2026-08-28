@@ -1,6 +1,6 @@
 {
   "name": "tkr",
-  "version": "5.24.0",
+  "version": "5.25.0",
   "description": "Token Reducer \u2014 unified token efficiency plugin for Claude Code. Tool output compression, semantic search, capacity-aware delegation, and output brevity.",
   "author": {
     "name": "Brantley Peers"

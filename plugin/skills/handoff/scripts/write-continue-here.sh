@@ -14,8 +14,21 @@
 #    "open_threads": [...], "next_action": "...",
 #    "next_session_posture": "..."}   # writer-optional; skill always sends it (HAND-006)
 #
+# Project anchoring (HAND-007), in priority order:
+#   1. --project-dir DIR    — explicit; what the skill and the keepalive
+#                             watcher pass. This is the only input that
+#                             matches what the read side is given.
+#   2. CLAUDE_PROJECT_DIR   — set by Claude Code where available.
+#   3. $PWD                 — last resort, NOT the source of truth.
+# The anchor decides where `.tkr/handoffs/` is and which keepalive
+# project key the provenance gate reads. Inferring it from cwd is how a
+# handoff ends up inside the tkr install tree, unreadable by /continue
+# and invisible to prune, with every surface still reporting success.
+#
 # Optional env:
 #   TKR_STATE_DIR        — override ~/.tkr (also where ledger lives)
+#   TKR_HANDOFFS_DIR     — override the resolved handoffs directory
+#                          (wins over --project-dir and git)
 #   TKR_HANDOFF_TARGET   — override `.continue-here.md` write path
 #   TKR_HANDOFF_NO_EMIT  — if "1", skip ledger emit (used by tests
 #                          and unattended fires from /tkr:keepalive)
@@ -98,11 +111,18 @@ SOURCE_METHOD=""
 #   Override:         TKR_HANDOFF_TARGET or --target sets explicit path
 TARGET="${TKR_HANDOFF_TARGET:-}"
 
+# HAND-007: the project anchor is an INPUT. The read side is handed
+# `projectPath` from the SessionStart payload; this side has to be told
+# the same thing or the two only agree by coincidence. cwd is the
+# fallback, not the source of truth — see handoffs-dir.sh.
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1 ;;
     --no-emit) NO_EMIT=1 ;;
     --session-id) SESSION_ID="$2"; SESSION_ID_SOURCE="flag"; shift ;;
+    --project-dir) PROJECT_DIR="$2"; shift ;;
     --target) TARGET="$2"; shift ;;
     --name) NAME_OVERRIDE="$2"; shift ;;
     --source)
@@ -154,7 +174,10 @@ if [ "$SOURCE" = "manual" ] && [ "$SOURCE_METHOD" = "state_gate" ]; then
   if [ -f "$RESOLVE_PROJECT" ]; then
     # shellcheck source=/dev/null
     . "$RESOLVE_PROJECT"
-    PROJ_KEY="$(tkr_keepalive_project_key "$PWD")"
+    # HAND-007: keyed off the resolved project anchor, not cwd — a caller
+    # that ran from anywhere but the project root used to key this gate
+    # under the wrong project and silently read `manual`.
+    PROJ_KEY="$(tkr_keepalive_project_key "$PROJECT_DIR")"
     if [ -n "$PROJ_KEY" ]; then
       PROJ_DIR="$STATE_DIR/keepalive-projects/$PROJ_KEY"
       PROJ_FIRED="$(cat "$PROJ_DIR/last-fired" 2>/dev/null || echo 0)"
@@ -215,39 +238,12 @@ if [ "$SOURCE" = "keepalive" ] && [ -n "$SESSION_ID" ]; then
   fi
 fi
 
-# Resolve the handoffs directory (#262): a plain cwd-relative
-# `.tkr/handoffs` lands in the WORKTREE's own tree when this runs inside
-# a git worktree, invisible to /continue running from the main checkout.
-# Priority: TKR_HANDOFFS_DIR override (checked first, wins over
-# everything) > main-checkout root, derived from `git rev-parse
-# --git-common-dir` (its parent is the main worktree root —
-# `--show-toplevel` is wrong here, it returns the worktree itself) >
-# today's cwd-relative fallback when git resolution is unavailable or
-# fails for any reason. The read side (hooks/lib/sessionstart/continue.js
-# `handoffsDir`, skills/handoff/scripts/prune.sh) must resolve
-# identically or the two drift again.
-resolve_handoffs_dir() {
-  if [ -n "${TKR_HANDOFFS_DIR:-}" ]; then
-    printf '%s\n' "$TKR_HANDOFFS_DIR"
-    return
-  fi
-  # Scrub ambient GIT_* before asking git anything: this runs inside hooks,
-  # and git exports GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE into every hook it
-  # runs. Git prefers those over the current directory, so an un-scrubbed
-  # call would resolve against whatever repo the environment points at
-  # rather than this one.
-  _common_dir="$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
-    -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY GIT_TERMINAL_PROMPT=0 \
-    git rev-parse --git-common-dir 2>/dev/null || true)"
-  if [ -n "$_common_dir" ]; then
-    _common_dir="$(cd "$_common_dir" 2>/dev/null && pwd || true)"
-  fi
-  if [ -n "$_common_dir" ]; then
-    printf '%s\n' "$(dirname "$_common_dir")/.tkr/handoffs"
-    return
-  fi
-  printf '%s\n' ".tkr/handoffs"
-}
+# Resolve the handoffs directory. Shared with prune.sh and mirrored by
+# the read side (hooks/lib/sessionstart/continue.js `handoffsDir`) — see
+# handoffs-dir.sh for why the anchor is an input and not a cwd
+# inference (HAND-007).
+# shellcheck source=/dev/null
+. "$(dirname "$0")/handoffs-dir.sh"
 
 # Resolve default target when unset.
 if [ -z "$TARGET" ]; then
@@ -257,7 +253,19 @@ if [ -z "$TARGET" ]; then
   fi
   [ -z "$IDENT" ] && IDENT="unknown-sid"
   STAMP="$(date -u +"%Y%m%d-%H%M")"
-  HANDOFFS_DIR="$(resolve_handoffs_dir)"
+  HANDOFFS_DIR="$(tkr_handoffs_dir "$PROJECT_DIR")"
+  # HAND-007: refuse rather than write somewhere nothing reads. Landing
+  # inside the skill's own install tree means the anchor was lost — no
+  # --project-dir, cwd inside the skill dir, and no git to fall back on.
+  # /continue and prune are both project-anchored and would never see the
+  # file, and the `resume:` line below would print a path that resolves
+  # against the project to nothing. Silent success is the whole defect.
+  if tkr_handoffs_dir_is_stray "$HANDOFFS_DIR"; then
+    echo "refusing to write a handoff inside the tkr install tree: $HANDOFFS_DIR" >&2
+    echo "pass --project-dir <project-root> (and invoke this script by absolute path" >&2
+    echo "rather than cd-ing into the skill directory)." >&2
+    exit 3
+  fi
   TARGET="$HANDOFFS_DIR/${IDENT}-${STAMP}.md"
 fi
 

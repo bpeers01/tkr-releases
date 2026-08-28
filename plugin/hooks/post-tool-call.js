@@ -177,6 +177,21 @@ async function processEvent(event) {
     process.env.TKR_SESSION_ID = sessionID;
   }
 
+  // #584: this hook is the "non-rewritten path" — a Bash call tkr-rewrite.js
+  // never routed to `tkr <cmd>`, so bash-filter.js's `tkr filter-stdin`
+  // spawn (tryFilterStdin, below) is the only tkr process that ever sees
+  // this tool call. It inherits process.env via spawnSync's default, so
+  // stamping here is what lets tracking.CurrentToolUseID/CurrentPromptID
+  // read something instead of "" on this path. Mirrors tkr-rewrite.js's
+  // injectIDs for the rewritten path; both read the same top-level event
+  // fields (cmd/tkr/cmd_route_funnel.go documents the payload shape).
+  if (event?.tool_use_id) {
+    process.env.TKR_TOOL_USE_ID = String(event.tool_use_id);
+  }
+  if (event?.prompt_id) {
+    process.env.TKR_PROMPT_ID = String(event.prompt_id);
+  }
+
   // Issue #123: the session's actual effort reaches effort-<sid>.json
   // from here and nowhere else. PostToolUse fires inside a tool-use
   // context, which is the only context Claude Code populates

@@ -16,7 +16,7 @@ const { stateDir } = require("./lib/state-dir");
 const { recordRewriteMiss } = require("./lib/rewrite-miss");
 const { tkrSpawnArgv } = require("./lib/tkr-bin");
 const resident = require("./lib/resident-client");
-const { injectSessionID } = require("./lib/session-id-inject");
+const { injectIDs } = require("./lib/session-id-inject");
 
 const TKR_STATE_DIR = stateDir();
 const TIMINGS_FILE = path.join(TKR_STATE_DIR, "hook-timings.jsonl");
@@ -472,11 +472,20 @@ async function onStdinEnd() {
   // circuit breaker) to the rewritten command so the spawned tkr process
   // can key delta snapshots on it instead of falling back to pid-<ppid>.
   // "default" means every id source missed — nothing real to attach, and
-  // the SAFE_SID check inside injectSessionID would otherwise happily
-  // stamp the literal word "default" onto the command.
-  if (sid !== "default") {
-    rewritten = injectSessionID(rewritten, sid);
-  }
+  // the SAFE_SID check inside injectIDs would otherwise happily stamp the
+  // literal word "default" onto the command.
+  //
+  // #584: also attach tool_use_id / prompt_id, straight off the PreToolUse
+  // payload (same shape as PreToolUse(Agent) — see cmd/tkr/cmd_route_funnel.go
+  // for the documented field set), so the commands/compression_events rows
+  // the spawned process writes can be joined back to the OTel tool_result
+  // that caused them. Independent of the sid check: either id can be
+  // present or safe without the other.
+  rewritten = injectIDs(rewritten, {
+    sid: sid !== "default" ? sid : undefined,
+    toolUseId: event?.tool_use_id,
+    promptId: event?.prompt_id,
+  });
 
   const updatedInput = {
     ...(event.tool_input && typeof event.tool_input === "object" ? event.tool_input : {}),

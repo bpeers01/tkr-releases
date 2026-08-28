@@ -16,14 +16,39 @@ Hybrid search engine that combines BM25 lexical retrieval with a 4-tier trust mo
 ```bash
 tkr search "query"                        # Search (JSON output)
 tkr search "query" --human                # Human-readable output
-tkr search "query" --type code            # Filter by doc type
+tkr search "query" --type code            # Filter by doc type (code, repo-local, diagram, document)
 tkr search "query" --path "docs/*"        # Filter by path
 tkr search "query" --context-pack         # Multi-source context bundle
 tkr search "query" --compact              # Shorter snippets, fewer results
 tkr search --build-index                  # Build project index
 tkr search --refresh                      # Incremental index update
 tkr search --stats                        # Index statistics
+tkr search --root <dir> "query"           # Index/search a project root other than cwd
 ```
+
+## Documents
+
+Alongside code, docs, and diagrams, `tkr search` indexes uploaded/user
+documents (`doc_type: document`): `.txt`/`.csv`/`.tsv` are read as-is;
+`.pdf`/`.docx`/`.xlsx`/`.pptx` are converted via `markitdown` (must be on
+`PATH`, or point at it with `TKR_MARKITDOWN`) and the converted markdown
+is persisted under `<index-dir>/converted/`. Source files are capped at
+25 MiB; indexed content is capped at 2 MiB per document.
+
+Every file discovery saw but the index never opened — unsupported
+extension, over a size cap, or failed conversion — is counted, not
+silently dropped. Every `tkr search --build-index`/`--refresh`/query
+prints a one-line skip notice to stderr when anything was skipped:
+
+```
+tkr search: 3 files not searched — .zip:2 (unsupported extension), .pdf:1 (extraction failed); run --stats for detail
+```
+
+An index built before this instrumentation landed prints `skip
+tracking: not available (index predates skip persistence; run
+--build-index)` instead of a false "nothing skipped" — rebuild to get
+real skip counts. `tkr search --stats` shows the full per-channel
+breakdown.
 
 ## When to Use
 

@@ -8,6 +8,9 @@
 #   prune.sh --older-than <days>   # override 7d threshold
 #   prune.sh --delete <path>...    # delete specific paths (skill-driven
 #                                    after per-file prompts)
+#   prune.sh --project-dir <dir>   # anchor the handoffs dir explicitly
+#                                    (HAND-007; defaults to
+#                                    CLAUDE_PROJECT_DIR, then $PWD)
 #
 # The skill body invokes this script twice for the interactive path:
 #   1. with no flags → get the list
@@ -18,11 +21,13 @@ set -euo pipefail
 ACTION="list"
 THRESHOLD_DAYS=7
 DELETE_PATHS=()
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --all) ACTION="delete-all" ;;
     --dry-run) ACTION="list" ;;
+    --project-dir) PROJECT_DIR="$2"; shift ;;
     --older-than) THRESHOLD_DAYS="$2"; shift ;;
     --delete) ACTION="delete-list"; shift; while [ $# -gt 0 ]; do DELETE_PATHS+=("$1"); shift; done; break ;;
     -h|--help)
@@ -34,26 +39,25 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-# #262: resolve against the main checkout root when running inside a git
-# worktree, so this agrees with write-continue-here.sh's
-# resolve_handoffs_dir(). TKR_HANDOFFS_DIR still wins outright. Falls back
-# to today's cwd-relative behavior when git resolution is unavailable.
-DIR="${TKR_HANDOFFS_DIR:-}"
-if [ -z "$DIR" ]; then
-  # Scrub ambient GIT_* first — see write-continue-here.sh's
-  # resolve_handoffs_dir() for why (hooks inherit GIT_DIR and friends,
-  # which git prefers over the current directory).
-  _common_dir="$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
-    -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY GIT_TERMINAL_PROMPT=0 \
-    git rev-parse --git-common-dir 2>/dev/null || true)"
-  if [ -n "$_common_dir" ]; then
-    _common_dir="$(cd "$_common_dir" 2>/dev/null && pwd || true)"
-  fi
-  if [ -n "$_common_dir" ]; then
-    DIR="$(dirname "$_common_dir")/.tkr/handoffs"
-  else
-    DIR=".tkr/handoffs"
-  fi
+# Same resolver as the writer and the same anchor rules — see
+# handoffs-dir.sh (HAND-007). A prune that resolves differently from the
+# writer reports "nothing stale" over a directory the writer never used.
+# shellcheck source=/dev/null
+. "$(dirname "$0")/handoffs-dir.sh"
+DIR="$(tkr_handoffs_dir "$PROJECT_DIR")"
+
+# HAND-007 recovery sweep: handoffs written before the anchor fix landed
+# inside the skill's own install tree, where nothing project-anchored can
+# reach them — not this prune, not /continue, not the SessionStart count.
+# They are otherwise unreachable, so report them on every run. Reporting
+# only: deleting files the user has never been shown is the wrong
+# direction for a bug whose whole character was silence.
+STRAY_DIR="$(tkr_handoffs_skill_root)/.tkr/handoffs"
+if [ -n "$STRAY_DIR" ] && [ -d "$STRAY_DIR" ] && [ "$STRAY_DIR" != "$DIR" ]; then
+  for _stray in "$STRAY_DIR"/*.md; do
+    [ -f "$_stray" ] || continue
+    echo "stray handoff (written before the HAND-007 anchor fix): $_stray" >&2
+  done
 fi
 
 if [ ! -d "$DIR" ]; then

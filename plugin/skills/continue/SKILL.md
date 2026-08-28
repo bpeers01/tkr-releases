@@ -72,6 +72,14 @@ explicit path arg (contains "/" or ends ".md")?
 
 1. Read the resolved handoff file from `.tkr/handoffs/` (picked per
    decision tree) with native `Read` (small file, no map mode needed).
+   Native `Read` defaults to ~2000 lines per call; a handoff should
+   never be that long (tier-1 target ~1.6k tokens, see above), but if
+   the result comes back at exactly the line limit, that is a
+   truncation signal, not a complete file (HAND-010) — re-`Read` with
+   `offset` past what was already returned and concatenate before
+   summarizing. Flag an oversized handoff to the user rather than
+   silently patching over it; per HAND-005 above, a handoff this large
+   is itself a `/handoff` writer bug.
 2. Summarize back to the user in 3-5 lines: position, top 1-2 next
    actions, any blockers. Don't dump the whole file. **Do NOT
    diagnose current session state** (ctx size, cache, pressure,

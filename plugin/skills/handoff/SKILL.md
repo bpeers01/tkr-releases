@@ -109,9 +109,26 @@ Override via `TKR_HANDOFF_TARGET` / `--target <path>`.
    shell parse error; transport-side chunking, not model-composed
    malformed content; the file-write-then-invoke sequence sidesteps
    the threshold unconditionally regardless of payload size), then
-   invoke `bash scripts/write-continue-here.sh < <scratch-file-path>` as a
-   separate Bash call. Writer is atomic (tmp + mv) and always writes
-   (no confirm gate). Per-session filenames overwrite in place.
+   invoke the writer **by absolute path, from the project root** as a
+   separate Bash call:
+
+   ```
+   bash "<skill-dir>/scripts/write-continue-here.sh" \
+     --project-dir "$PWD" < <scratch-file-path>
+   ```
+
+   Do **not** `cd` into the skill directory first, and do not invoke it
+   by the relative `scripts/…` path — that is what a bare `scripts/…`
+   instruction invites (HAND-007). The tkr install directory is not a
+   git repo, so from inside it the writer used to fall back to a
+   cwd-relative `.tkr/handoffs` and strand the handoff under the skill
+   tree: `/continue` is project-anchored and never found it, `prune`
+   never listed it, and the `resume:` line printed a relative path that
+   resolved against the project to nothing — success reported, handoff
+   lost. The writer now refuses that write (exit 3) rather than
+   performing it silently, but `--project-dir` is what makes it land in
+   the first place. Writer is atomic (tmp + mv) and always writes (no
+   confirm gate). Per-session filenames overwrite in place.
 4. **Emit** — writer records `{layer:"L2", event:"taken", outcome:
    {action:"handoff_skill_invoked", savings_estimate_cu:...,
    latency_turns:0}}` to `~/.tkr/playbook-events.jsonl`. Suppress with
@@ -308,10 +325,15 @@ Invocations:
 - `/handoff prune --dry-run` — list only, no deletion.
 - `/handoff prune --older-than <days>` — override 7d threshold.
 
-Backed by `scripts/prune.sh`, invoked as `bash scripts/prune.sh`. JSON
-output for the interactive path lets the model render previews and
-confirm per-file before deleting selected ones via
-`bash scripts/prune.sh --delete <path>...`.
+Backed by `scripts/prune.sh`, invoked by absolute path from the project
+root — `bash "<skill-dir>/scripts/prune.sh" --project-dir "$PWD"` — for
+the same reason the writer is (HAND-007): prune must resolve the same
+handoffs directory the writer used, or it reports "nothing stale" over a
+directory nothing was ever written to. JSON output for the interactive
+path lets the model render previews and confirm per-file before deleting
+selected ones via `--delete <path>...`. Any `stray handoff (…)` lines on
+stderr are pre-fix files stranded under the install tree; surface them to
+the user rather than deleting them.
 
 Both backing scripts are invoked through `bash`, never executed
 directly, and must stay that way (#402). Every `.sh` in the repo is

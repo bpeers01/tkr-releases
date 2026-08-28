@@ -1091,6 +1091,76 @@ test("HAND-008: every other path keeps bare-text stdout", () => {
   }
 });
 
+// --- HAND-010: additionalContext carries the handoff byte-identical ----
+//
+// HAND-008 pinned that auto-continue forks to JSON and that the two
+// channels differ in length. It never checked that the JSON-wrapped
+// additionalContext channel actually reaches stdout with the source
+// file's bytes intact — plausible failure mode per the MCP
+// `updatedToolOutput` precedent (nested envelope honored exactly,
+// top-level envelope silently ignored; docs/spikes/
+// cowork-updatedtooloutput-project-locus-test-plan.md:62-63). This
+// spawns the real hook process (not a function call) and diffs the
+// `<tkr-carryover>` body against the file written to disk, at a size
+// (~20KB) close to the 24KB gate rather than a token placeholder.
+
+function runHookForContinueWithBody(bodyContent, ageMs, source) {
+  const state = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-ss-h010-state-"));
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-ss-h010-proj-"));
+  const dir = path.join(proj, ".tkr", "handoffs");
+  fs.mkdirSync(dir, { recursive: true });
+  const full = path.join(dir, "a-20260805-1200.md");
+  fs.writeFileSync(full, bodyContent);
+  const t = new Date(Date.now() - ageMs);
+  fs.utimesSync(full, t, t);
+  try {
+    const env = { ...process.env, TKR_STATE_DIR: state, CLAUDE_PROJECT_DIR: proj };
+    delete env.TKR_SYSPROMPT;
+    const res = spawnSync(process.execPath, [HOOK], {
+      input: JSON.stringify({ source, session_id: "h010-sid" }),
+      encoding: "utf8",
+      env,
+      cwd: proj,
+    });
+    return res.stdout || "";
+  } finally {
+    safeRmSync(state);
+    safeRmSync(proj);
+  }
+}
+
+test("HAND-010: auto-continue additionalContext is byte-identical to the source handoff, near the 24KB gate", () => {
+  // 300 uniquely-numbered lines (~20KB) — under AUTO_CONTINUE_MAX_BYTES
+  // (24KB) but large enough that a smaller, undocumented truncation
+  // point (8KB/16KB buffer, etc.) would show up as a line-count or
+  // content mismatch rather than passing by coincidence on a toy fixture.
+  const lines = [];
+  for (let i = 1; i <= 300; i++) {
+    lines.push(`Line ${String(i).padStart(4, "0")} — ${"x".repeat(50)}`);
+  }
+  const body = `# Handoff\n\n## Next Action\n${lines.join("\n")}\n`;
+  assert.ok(
+    Buffer.byteLength(body, "utf8") < 24 * 1024,
+    "fixture must stay under the 24KB auto-continue gate",
+  );
+
+  const out = runHookForContinueWithBody(body, 4 * 60 * 1000, "clear");
+  let parsed;
+  assert.doesNotThrow(() => {
+    parsed = JSON.parse(out);
+  }, "auto path must emit parseable JSON");
+
+  const ctx = parsed.hookSpecificOutput.additionalContext;
+  const m = ctx.match(/<tkr-carryover path="[^"]*">\n([\s\S]*)\n<\/tkr-carryover>\n/);
+  assert.ok(m, "additionalContext must contain a <tkr-carryover> block");
+  const delivered = m[1];
+  assert.strictEqual(
+    delivered,
+    body.trimEnd(),
+    "the delivered carryover body must be byte-identical to the source handoff (minus trailing whitespace)",
+  );
+});
+
 // --- #357: memory nudge routes through systemMessage, not stderr -------
 //
 // Sibling of #349 (already fixed for the Stop hook in memory-health.js).

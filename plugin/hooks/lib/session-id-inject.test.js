@@ -9,7 +9,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert");
-const { injectSessionID, SAFE_SID } = require("./session-id-inject");
+const { injectSessionID, injectIDs, SAFE_SID } = require("./session-id-inject");
 
 test("single command: flag inserted right after the tkr token", () => {
   const out = injectSessionID("tkr grep -n foo bar.go", "abc123-def");
@@ -75,4 +75,52 @@ test("SAFE_SID rejects shell metacharacters and accepts uuid-shaped ids", () => 
   assert.ok(!SAFE_SID.test("s; rm -rf /"));
   assert.ok(!SAFE_SID.test("s space"));
   assert.ok(!SAFE_SID.test("$(whoami)"));
+});
+
+// #584: injectIDs generalizes injectSessionID to also attach tool_use_id
+// and prompt_id, independently of each other and of the session id.
+
+test("injectIDs: all three ids attached in fixed order", () => {
+  const out = injectIDs("tkr grep -n foo bar.go", {
+    sid: "sid1",
+    toolUseId: "toolu_012pUuAJ4A8Yq1vHj1aezfav",
+    promptId: "prompt-1",
+  });
+  assert.strictEqual(
+    out,
+    "tkr --session-id sid1 --tool-use-id toolu_012pUuAJ4A8Yq1vHj1aezfav --prompt-id prompt-1 grep -n foo bar.go",
+  );
+});
+
+test("injectIDs: each id is independent — a missing one doesn't block the others", () => {
+  assert.strictEqual(
+    injectIDs("tkr grep foo", { toolUseId: "toolu_1" }),
+    "tkr --tool-use-id toolu_1 grep foo",
+  );
+  assert.strictEqual(
+    injectIDs("tkr grep foo", { sid: "sid1", promptId: "prompt-1" }),
+    "tkr --session-id sid1 --prompt-id prompt-1 grep foo",
+  );
+});
+
+test("injectIDs: an unsafe id is left out while safe ones still attach", () => {
+  const out = injectIDs("tkr grep foo", { sid: "sid1", toolUseId: "s; rm -rf /" });
+  assert.strictEqual(out, "tkr --session-id sid1 grep foo");
+});
+
+test("injectIDs: no safe ids leaves the command unchanged", () => {
+  assert.strictEqual(injectIDs("tkr grep foo", {}), "tkr grep foo");
+  assert.strictEqual(injectIDs("tkr grep foo", undefined), "tkr grep foo");
+});
+
+test("injectIDs: compound command attaches to every tkr segment", () => {
+  const out = injectIDs("tkr git status && tkr git diff", { toolUseId: "toolu_1" });
+  assert.strictEqual(
+    out,
+    "tkr --tool-use-id toolu_1 git status && tkr --tool-use-id toolu_1 git diff",
+  );
+});
+
+test("injectSessionID delegates to injectIDs (sid-only)", () => {
+  assert.strictEqual(injectSessionID("tkr grep foo", "sid1"), "tkr --session-id sid1 grep foo");
 });
