@@ -452,8 +452,8 @@ try {
         Write-Host ""
         Write-Host "To complete setup, add hooks to $SettingsFile :"
         Write-Host '  "hooks": {'
-        Write-Host "    `"PreToolUse`": [{ `"type`": `"command`", `"command`": `"node $ClaudeHooksDir/tkr-rewrite.js`" }],"
-        Write-Host "    `"SessionStart`": [{ `"type`": `"command`", `"command`": `"node $ClaudeHooksDir/session-start.js`" }],"
+        Write-Host "    `"PreToolUse`": [{ `"type`": `"command`", `"command`": `"timeout 5 tkr hook rewrite`", `"timeout`": 10 }],"
+        Write-Host "    `"SessionStart`": [{ `"type`": `"command`", `"command`": `"tkr hook session-start`" }],"
         Write-Host "    `"UserPromptSubmit`": [{ `"type`": `"command`", `"command`": `"node $ClaudeHooksDir/user-prompt-submit.js`" }]"
         Write-Host '  }'
     }
