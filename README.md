@@ -9,6 +9,27 @@ It works on four fronts at once: compresses bloated tool output before Claude re
 
 Built for Claude Code on **Pro, Max, or Team**. API users get the same wins paid in dollars instead of cap headroom (`tkr gain --economics`). Binaries ship every release for macOS, Linux, and Windows; automated release-validation smoke testing currently covers Linux and Windows only (see Requirements). Single static binary, zero runtime dependencies.
 
+> **What's new in v5.26.0** — The code-graph feature no longer redoes
+> its full scan every time it fires. On an unchanged project it used to
+> take over a minute and read tens of gigabytes off disk just to
+> confirm nothing changed; now that case finishes in under a second. A
+> real change to your code still rebuilds in a few seconds, and three
+> different things that could trigger a rebuild (a git commit, a search
+> refresh, background maintenance) no longer race each other and corrupt
+> the same file — they now take turns safely. The install-time git hook
+> also stopped duplicating this work inside linked git worktrees, which
+> had been quietly leaving behind dozens of redundant multi-gigabyte
+> graph files on some machines; existing installs upgrade themselves
+> automatically. Also new: typing `@path:map`, `@path:sig`, `@path:skel`,
+> or `@path:L10-40` in a prompt now pulls in just an outline, signatures,
+> a code skeleton, or a specific line range instead of attaching the
+> whole file — useful for large files where you only need part of the
+> picture. Two Windows-only fixes for the experimental Codex integration:
+> it no longer wrongly claims every hook needs review when it already
+> was, and it no longer refuses valid session data on Windows setups that
+> use shortened file paths.
+> [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
+>
 > **What's new in v5.25.0** — Claude Code can now read a database
 > directly and safely: a new `tkr_sql` tool answers read-only queries
 > against SQLite or Postgres, but only after you've separately approved
@@ -355,7 +376,7 @@ The installer auto-detects Claude Code and installs the **core** plugin tier by 
 tkr init -g          # Claude Code (programmatic hook — auto command rewriting)
 tkr init -g --gemini # Gemini CLI
 tkr init -g --cursor # Cursor IDE
-tkr init --codex     # Codex CLI (project rules — AGENTS.md awareness)
+tkr init --codex     # Codex CLI (experimental hooks + project MCP; /hooks review required)
 tkr init --agents    # Claude Code subagents (.claude/agents/*.md frontmatter)
 tkr init --awareness-doc # also write TKR.md + @-import it into CLAUDE.md
 ```
@@ -373,10 +394,10 @@ Claude Code, Gemini CLI, and Cursor rewrite commands automatically — no manual
 
 ```bash
 # macOS / Linux / Git Bash
-TKR_VERSION=v5.25.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
+TKR_VERSION=v5.26.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.25.0
+irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.26.0
 ```
 
 #### Manual download
@@ -750,7 +771,7 @@ When installed as a plugin, tkr registers 9 core on-demand skills invocable with
 ## Verify Installation
 
 ```bash
-tkr --version             # expected: tkr v5.25.0 (or newer)
+tkr --version             # expected: tkr v5.26.0 (or newer)
 tkr doctor                # health check — PASS/WARN/FAIL rows; exit 0 or 2
 tkr verify                # run built-in filter tests (342 should pass)
 ```
