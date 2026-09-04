@@ -972,3 +972,149 @@ test("autoroute: stale payload (mtime beyond max age) does not fire", () => {
     t.cleanup();
   }
 });
+
+// ── spawn advisories (#675 Phase 1e) ────────────────────────────────────
+//
+// Warnings that ride the ALLOW path. The distinction from a deny is the
+// whole point: ADR-0033's posture is that tkr informs and the model
+// decides, so an advisory must reach the coordinator without touching the
+// spawn.
+
+const ADVISORY_VERDICT = {
+  verdict: "allow",
+  enforce: true,
+  evaluated: true,
+  mode: "advisory",
+  advisories: [
+    {
+      code: "worktree_base_ref_not_head",
+      detail: "this spawn runs isolated and no worktree.baseRef in the settings files tkr can read",
+    },
+  ],
+};
+
+test("advisory: delivered as additionalContext on a spawn with nothing else to change", () => {
+  const shim = withTkrShim(ADVISORY_VERDICT);
+  const tmp = withTempLedger();
+  try {
+    // run_in_background:false and a non-Explore profile means the hook has
+    // no rewrite to make — before advisories, this path exited silently.
+    const res = runHook(
+      {
+        tool_name: "Agent",
+        session_id: "advisory-sid",
+        tool_input: {
+          subagent_type: "tkr:sweep-sonnet",
+          prompt: "rename the symbol across the package",
+          run_in_background: false,
+        },
+      },
+      { ...tmp.env, ...shim.env },
+    );
+    assert.strictEqual(res.status, 0, `exit ${res.status}: ${res.stderr}`);
+    const out = JSON.parse(res.stdout);
+    assert.strictEqual(out.hookSpecificOutput.hookEventName, "PreToolUse");
+    assert.ok(
+      out.hookSpecificOutput.additionalContext.includes("worktree_base_ref_not_head"),
+      `advisory code missing: ${res.stdout}`,
+    );
+    // An advisory is not a refusal, and must not read like one.
+    assert.ok(!("decision" in out), "an advisory must never block the spawn");
+    assert.ok(
+      !("permissionDecision" in out.hookSpecificOutput),
+      "an advisory must never carry a permission decision",
+    );
+  } finally {
+    shim.cleanup();
+    tmp.cleanup();
+  }
+});
+
+test("advisory: a verdict with no advisories still exits silently", () => {
+  const shim = withTkrShim({ verdict: "allow", enforce: true, evaluated: true, mode: "advisory" });
+  const tmp = withTempLedger();
+  try {
+    const res = runHook(
+      {
+        tool_name: "Agent",
+        session_id: "advisory-sid-quiet",
+        tool_input: {
+          subagent_type: "tkr:sweep-sonnet",
+          prompt: "rename the symbol across the package",
+          run_in_background: false,
+        },
+      },
+      { ...tmp.env, ...shim.env },
+    );
+    assert.strictEqual(res.status, 0);
+    assert.strictEqual(res.stdout.trim(), "", `expected silence, got: ${res.stdout}`);
+  } finally {
+    shim.cleanup();
+    tmp.cleanup();
+  }
+});
+
+test("advisory: rides alongside updatedInput when the hook also rewrites the call", () => {
+  const shim = withTkrShim(ADVISORY_VERDICT);
+  const tmp = withTempLedger();
+  try {
+    // run_in_background:true forces the foreground rewrite, so this
+    // response carries both fields.
+    const res = runHook(tkrEvent("rename the symbol across the package"), {
+      ...tmp.env,
+      ...shim.env,
+    });
+    assert.strictEqual(res.status, 0, `exit ${res.status}: ${res.stderr}`);
+    const out = JSON.parse(res.stdout);
+    assert.strictEqual(out.hookSpecificOutput.updatedInput.run_in_background, false);
+    assert.ok(
+      out.hookSpecificOutput.additionalContext.includes("worktree_base_ref_not_head"),
+      `advisory dropped on the rewrite path: ${res.stdout}`,
+    );
+  } finally {
+    shim.cleanup();
+    tmp.cleanup();
+  }
+});
+
+test("advisory: the isolation param reaches policy, so the profile default is not the only input", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-veto-echo-"));
+  const seen = path.join(dir, "payload.json");
+  const shim = path.join(dir, "echo-shim.js");
+  fs.writeFileSync(
+    shim,
+    `let buf = "";
+` +
+      `process.stdin.on("data", (d) => { buf += d; });
+` +
+      `process.stdin.on("end", () => {
+` +
+      `  require("fs").writeFileSync(${JSON.stringify(seen)}, buf);
+` +
+      `  process.stdout.write(JSON.stringify({verdict:"allow",enforce:true,evaluated:true,mode:"advisory"}));` +
+      `});
+`,
+  );
+  const tmp = withTempLedger();
+  try {
+    runHook(
+      {
+        tool_name: "Agent",
+        session_id: "advisory-sid-iso",
+        tool_input: {
+          subagent_type: "tkr:sweep-sonnet",
+          prompt: "rename the symbol across the package",
+          run_in_background: false,
+          isolation: "worktree",
+        },
+      },
+      { ...tmp.env, TKR_BIN: shim },
+    );
+    const payload = JSON.parse(fs.readFileSync(seen, "utf8"));
+    assert.strictEqual(payload.isolation, "worktree");
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+    tmp.cleanup();
+  }
+});
+

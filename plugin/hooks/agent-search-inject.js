@@ -303,18 +303,50 @@ function handleInput(input) {
       return;
     }
 
+    // Advisories describe the call that will actually RUN, so they come
+    // from the as-emitted check when one ran and the as-written check
+    // otherwise. Not merged through strongestVerdict: that ranks by
+    // denial severity, where every allow ties, so it would pick between
+    // two advisory sets arbitrarily.
+    //
+    // Local-fallback verdicts never carry advisories — they are a keyword
+    // scan made on a cached mode, and a containment warning asserted on
+    // that basis would claim more standing than it has.
+    const advisorySource = asEmitted.verdict || asWritten.verdict;
+    const advisories = advisorySource && Array.isArray(advisorySource.advisories)
+      ? advisorySource.advisories
+      : [];
+    const advisoryContext = advisories.length ? formatAdvisories(advisories) : "";
+
     // Nothing to change: no forced foreground, no guidance, no model
     // rewrite, no plan applied. Exit without an updatedInput rather than
-    // emitting one identical to the input.
+    // emitting one identical to the input — unless there is an advisory
+    // to deliver, which is itself a reason to answer.
     if (!forceForeground && !shouldInjectPrompt && !autoModel && !applyWork) {
-      process.exit(0);
+      if (!advisoryContext) {
+        process.exit(0);
+        return;
+      }
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          additionalContext: advisoryContext,
+        },
+      }));
       return;
     }
 
+    // Both fields in one response. additionalContext alone is proven on
+    // this event (hooks/cache-bust-warn.js); carrying it ALONGSIDE
+    // updatedInput is not, so a harness that honors only one would drop
+    // the advisory on rewritten spawns. That degradation is one-directional
+    // and silent — a missing warning, never a wrong rewrite — which is why
+    // it is written down here rather than guarded against.
     const result = {
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         updatedInput: updatedInput,
+        ...(advisoryContext ? { additionalContext: advisoryContext } : {}),
       },
     };
 
@@ -323,6 +355,23 @@ function handleInput(input) {
     // Parse error — passthrough
     process.exit(0);
   }
+}
+
+// formatAdvisories renders route.VetoCheck's advisories for the
+// coordinator. Warnings, not refusals: the spawn proceeds either way, and
+// the text says what was observed and what to do about it rather than
+// asserting the harness's effective configuration (see
+// observedWorktreeBaseRef in cmd_route_vetocheck.go).
+function formatAdvisories(advisories) {
+  const lines = advisories
+    .filter((a) => a && typeof a.detail === "string" && a.detail)
+    .map((a) => `- [${a.code || "advisory"}] ${a.detail}`);
+  if (!lines.length) return "";
+  return (
+    "tkr spawn advisory (not a refusal — this spawn proceeds):" +
+    "\n" +
+    lines.join("\n")
+  );
 }
 
 // buildUpdatedInput produces the tool_input this hook would emit for a
@@ -422,6 +471,11 @@ function vetoCheck(subagentType, toolInput) {
         subagent_type: subagentType,
         model: toolInput.model || "",
         prompt: toolInput.prompt || "",
+        // The per-call isolation override. "" means the call passed none,
+        // in which case the profile's own frontmatter decides — policy
+        // resolves that, not this hook, so the registry stays the single
+        // place that knows which profiles ship isolated.
+        isolation: toolInput.isolation || "",
       }),
       encoding: "utf8",
       timeout: vetoTimeoutMs(),

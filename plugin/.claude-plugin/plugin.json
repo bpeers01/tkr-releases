@@ -1,6 +1,6 @@
 {
   "name": "tkr",
-  "version": "5.25.0",
+  "version": "5.26.0",
   "description": "Token Reducer \u2014 unified token efficiency plugin for Claude Code. Tool output compression, semantic search, capacity-aware delegation, and output brevity.",
   "author": {
     "name": "Brantley Peers"
@@ -30,7 +30,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/tkr-rewrite.js\""
+            "command": "timeout 5 tkr hook rewrite",
+            "timeout": 10
           }
         ]
       },
@@ -48,7 +49,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/long-runner-warn.js"
+            "command": "timeout 5 tkr hook long-runner-warn",
+            "timeout": 10
           }
         ]
       },
@@ -57,7 +59,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/cache-bust-warn.js"
+            "command": "timeout 5 tkr hook cache-bust-warn",
+            "timeout": 10
           }
         ]
       },
@@ -80,7 +83,7 @@
           },
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/session-start.js"
+            "command": "tkr hook session-start"
           }
         ]
       }
@@ -130,7 +133,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/subagent-outcome.js"
+            "command": "tkr hook subagent-outcome",
+            "timeout": 30
           }
         ]
       }
@@ -140,13 +144,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/memory-health.js",
+            "command": "tkr hook memory-health",
             "asyncRewake": true,
             "timeout": 30
           },
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/session-summary.js",
+            "command": "tkr hook session-summary",
             "asyncRewake": true,
             "timeout": 30
           },
@@ -168,11 +172,11 @@
           },
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/team-push.js"
+            "command": "tkr hook team-push"
           },
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/session-summary.js"
+            "command": "tkr hook session-summary"
           }
         ]
       }
@@ -183,7 +187,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/instructions-loaded.js"
+            "command": "tkr hook instructions-loaded"
           }
         ]
       }

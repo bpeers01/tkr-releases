@@ -9,8 +9,8 @@
 // Suppressible via TKR_SESSION_SUMMARY=0. Best-effort throughout: missing or
 // corrupt telemetry yields a shorter (or no) block, never an error.
 //
-// Why a separate file (not extending memory-health.js):
-//   - memory-health.js is single-responsibility (memory dir audit);
+// Why a separate file (not extending the memory-health hook):
+//   - memory-health is single-responsibility (memory dir audit);
 //     keep the value report independent so adding fields here doesn't
 //     bloat the memory hook
 //   - smaller blast radius: a bug in the summary can't break memory

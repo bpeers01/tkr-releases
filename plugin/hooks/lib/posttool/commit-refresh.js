@@ -10,9 +10,14 @@
 // `git commit` inside an active Claude session. The PostToolUse hook
 // covers that gap.
 //
-// Singleton-locked downstream:
-//   - doRefreshIndex acquires a 5-min proclock at ~/.tkr/locks/
-//   - autoGraphBuild uses an mtime check; over-firing is a cheap no-op
+// Singleton-locked downstream — both commands take their own proclock
+// (#735):
+//   - doRefreshIndex acquires a 5-min proclock at
+//     ~/.tkr/locks/search-refresh.lock
+//   - runGraphBuild acquires a 10-min proclock at
+//     ~/.tkr/locks/graph-build-<hash>.lock, per-store (hash of the
+//     resolved output dir); contention exits 0 immediately without
+//     opening the store
 // Over-firing is therefore safe; the worst case is a no-op cost <50ms.
 //
 // Kill switches (any one suppresses the spawn):
@@ -74,9 +79,10 @@ function spawnDetached(args, timeoutMs) {
 // forget so we don't surface their status.
 function maybeSpawnCommitRefresh(event) {
   if (!shouldFire(event)) return false;
-  // 10s budget on each — both commands acquire their own lock and exit
-  // immediately on contention or fresh-index short-circuit. The budget
-  // is a hard cap, not an expectation.
+  // 10s budget on each — both commands take their own proclock and exit
+  // immediately on contention (graph build's is per-store, #735) or a
+  // fresh-index/unchanged-tree short-circuit. The budget is a hard cap,
+  // not an expectation.
   spawnDetached(["search", "--refresh"], 10_000);
   spawnDetached(["graph", "build", "--quiet"], 10_000);
   return true;

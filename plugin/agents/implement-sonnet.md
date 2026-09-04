@@ -5,6 +5,7 @@ model: sonnet
 effort: medium
 maxTurns: 12
 tools: Read, Glob, Grep, Edit, Write, Bash
+isolation: worktree
 background: false
 calibration: assumed
 ---

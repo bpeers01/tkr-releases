@@ -8,22 +8,22 @@ InstructionsLoaded).
 
 | Hook file | Event | Purpose |
 |-----------|-------|---------|
-| `tkr-rewrite.js` | PreToolUse(Bash) | Rewrite raw bash → `tkr <cmd>` for filtering |
-| `agent-search-inject.js` | PreToolUse(Agent) | Auto-inject `tkr search` into Agent prompts; opt-in autoroute (COMPETE-002): downgrade Explore spawns to haiku on classifier `delegate_via` verdict; work routing (native-work-routing §13): record planned-vs-actual on every spawn, and at `mode = "assisted"` fill a compatible Agent call from the current work plan; spawn-time veto (ADR-0033): for `tkr:*` types only, ask `tkr route veto-check` whether the profile's own contract forbids this spawn and block it in an enforcing mode. Fails open for every failure meaning the check COULD NOT RUN — unreachable binary, non-zero exit, unparseable JSON all read as allow — because a machine without a working tkr must not have its spawns depend on one; each names itself in the ledger's `veto_unavailable` so an open failure is measurable rather than silent (#143 finding 1). A TIMEOUT is the scoped exception: the budget is measured (`TKR_VETO_TIMEOUT_MS`, default 2500ms) so exceeding it means hung rather than busy, and it then fails CLOSED for one class only — read-only profile **and** mutation intent **and** a previously observed enforcing mode. Everything else still fails open. See `lib/veto-fallback.js`, which owns the budget so the value and the rule for what a timeout MEANS cannot drift apart. The binary is resolved via `lib/tkr-bin.js`, shared with `tkr-rewrite.js` |
+| `tkr hook rewrite` (native Go verb, no JS) | PreToolUse(Bash) | Rewrite raw bash → `tkr <cmd>` for filtering. Ported from `tkr-rewrite.js` in #664 (deleted); the implementation is `internal/hooks/rewrite_hook.go`. A SEPARATE embedded copy survives at `internal/hooks/script/tkr-rewrite.js` — that one is what `tkr init` installs for standalone (non-plugin) setups and is still fully live |
+| `agent-search-inject.js` | PreToolUse(Agent) | Auto-inject `tkr search` into Agent prompts; opt-in autoroute (COMPETE-002): downgrade Explore spawns to haiku on classifier `delegate_via` verdict; work routing (native-work-routing §13): record planned-vs-actual on every spawn, and at `mode = "assisted"` fill a compatible Agent call from the current work plan; spawn-time veto (ADR-0033): for `tkr:*` types only, ask `tkr route veto-check` whether the profile's own contract forbids this spawn and block it in an enforcing mode. Fails open for every failure meaning the check COULD NOT RUN — unreachable binary, non-zero exit, unparseable JSON all read as allow — because a machine without a working tkr must not have its spawns depend on one; each names itself in the ledger's `veto_unavailable` so an open failure is measurable rather than silent (#143 finding 1). A TIMEOUT is the scoped exception: the budget is measured (`TKR_VETO_TIMEOUT_MS`, default 2500ms) so exceeding it means hung rather than busy, and it then fails CLOSED for one class only — read-only profile **and** mutation intent **and** a previously observed enforcing mode. Everything else still fails open. See `lib/veto-fallback.js`, which owns the budget so the value and the rule for what a timeout MEANS cannot drift apart. The binary is resolved via `lib/tkr-bin.js` (shared with the other JS hooks; the rewrite hook that once shared it is native since #664) |
 | `post-tool-call.js` | PostToolUse | Compress Bash output via TOML filter pipeline; on Agent/Task events also append one agent-completion row (#134 R0.1, `lib/agent-completions.js`); on AskUserQuestion/ExitPlanMode events perform the keepalive interactive-answer touch (`lib/keepalive-activity.js` `interactiveAnswerTouch`, issue #152 item 2). The touch lives here rather than in a matched `PostToolUse(AskUserQuestion\|ExitPlanMode)` entry because this is the plugin's UNMATCHED PostToolUse entry — it already receives the event, so a matched entry would only add a second node spawn and an edit to the prefix-cache-critical `plugin.json`. Cost on every other tool call is one `Set.has()` |
 | `post-tool-batch.js` | PostToolBatch | One first-batch row per prompt classifying the coordinator's first successful action (#134 R0.2). Event exists on CC ≥2.1.x (verified against the 2.1.221 binary; payload `tool_calls`); older builds never fire it and the read side must report that as "unavailable", never as inactivity |
 | `cli-corrections-injector.js` | PostToolUse(Bash) | Inject cli-corrections on Bash failure (PD-7) |
-| `session-start.js` | SessionStart | Brevity reinforcement + tkr awareness banner; on `startup`/`resume` also warms the opt-in resident runtime (#287, `lib/sessionstart/resident-warm.js`) so the first eligible Bash call is served rather than paying the fallback and starting the runtime for the call after it. Non-blocking and a no-op on every install that has not set `TKR_RESIDENT_ENABLED=1`. On `startup` also builds the INV-016 memory-health nudge (`lib/sessionstart/memory-nudge.js`); like `memory-health.js` below (#349), it goes out as `systemMessage` — not `process.stderr.write` — and (#357) the 24h dedup write is ordered to fire only once the message is actually assembled into that channel, so it can never record a nudge nobody saw |
+| `tkr hook session-start` (native Go verb, no JS) | SessionStart | Brevity reinforcement + tkr awareness banner; on `startup`/`resume` also warms the opt-in resident runtime (#287, `internal/hooks/sessionstart/residentwarm.go`) so the first eligible Bash call is served rather than paying the fallback and starting the runtime for the call after it. Non-blocking and a no-op on every install that has not set `TKR_RESIDENT_ENABLED=1`. On `startup` also builds the INV-016 memory-health nudge (`internal/hooks/sessionstart/memorynudge.go`); like the Stop-hook memory audit (#349), it goes out as `systemMessage` — not stderr — and (#357) the 24h dedup write is ordered to fire only once the message is actually assembled into that channel, so it can never record a nudge nobody saw. Ported from `session-start.js` in #664 Phase 4 (the JS orchestrator, `hooks/lib/sessionstart/` and `hooks/data/sessionstart/` were deleted with the flip); the implementation is `internal/cmd/hook_sessionstart.go` plus `internal/hooks/sessionstart/` |
 | `pre-compact.js` | PreCompact | Snapshot session + nudge `/clear` over `/compact` |
-| `memory-health.js` | Stop | Memory file rotation, dedup, staleness check. Warnings go out as `systemMessage` on stdout, silent stdout when clean (#349) — they were `process.stderr.write` on a hook that exits 0 until then, which per the Stderr rule below is the debug log only, so no warning this hook produced had ever been seen by a user without `--debug`. `formatProjectWarnings()` is pure and holds the wording; only `main()` writes |
+| `tkr hook memory-health` (native) | Stop | Memory file rotation, dedup, staleness check. Ported from `memory-health.js` in #664; the implementation is `internal/cmd/hook_memoryhealth.go`, which lives beside the classifier it calls rather than in `internal/hooks/` with the other ports — porting it into that package would have made a THIRD copy of the classifier (see the stability rule below). The JS file is NOT deletion-pending: `lib/sessionstart/memory-nudge.js` still `require()`s it for `auditMemDir`. Warnings go out as `systemMessage` on stdout, silent stdout when clean (#349) — they were `process.stderr.write` on a hook that exits 0 until then, which per the Stderr rule below is the debug log only, so no warning this hook produced had ever been seen by a user without `--debug`. `formatMemHealthWarnings()` is pure and holds the wording; only `RunMemoryHealthHook()` writes (`formatProjectWarnings()` is its JS twin, still live for the nudge path) |
 | `user-prompt-submit.js` | UserPromptSubmit | Reinforce brevity mode on every prompt; keepalive activity touch (`lib/keepalive-activity.js`, folded in from the former bash `activity-touch.sh` — issue #129); writes the `skill-invoked` ledger's manual rows directly (`recordManualSkillInvocation`, #278) — see the `skill-invoked.js` row below for why this hook, not that one, is where they get written |
-| `instructions-loaded.js` | InstructionsLoaded | Telemetry to `~/.tkr/instructions-load.jsonl` |
-| `cache-bust-warn.js` | PreToolUse(Edit\|Write) | Warn before editing prefix-cache-critical files (PlaybookV2 L5) |
-| `long-runner-warn.js` | PreToolUse(Bash) | Warn on watch/serve/follow commands that outlive the cache TTL (L4) |
+| `tkr hook instructions-loaded` (native Go verb, no JS) | InstructionsLoaded | Telemetry to `~/.tkr/instructions-load.jsonl` |
+| `tkr hook cache-bust-warn` (native Go verb, no JS) | PreToolUse(Edit\|Write) | Warn before editing prefix-cache-critical files (PlaybookV2 L5). Ported from `cache-bust-warn.js` in #664 (deleted); the implementation is `internal/hooks/cachebustwarn.go` |
+| `tkr hook long-runner-warn` (native Go verb, no JS) | PreToolUse(Bash) | Warn on watch/serve/follow commands that outlive the cache TTL (L4). Ported from `long-runner-warn.js` in #664/#681 (deleted); the implementation is `internal/hooks/longrunner.go` |
 | `skill-invoked.js` | PreToolUse(Skill) | Skill-invocation telemetry → `instructions-load.jsonl`. Schema v2 resolves `invocation_source` to `manual`/`auto` from the per-turn slash marker instead of always writing `unknown` — but only for a genuine `PreToolUse(Skill)` dispatch, which is the AUTO case. **A typed slash command never dispatches the Skill tool at all** (#205 live dogfood, #278): Claude Code resolves it natively, so this hook structurally never fires for a manual invocation, and the marker it would join against goes unread. The manual row is written by `user-prompt-submit.js` instead (`recordManualSkillInvocation`) on the same turn the `<command-name>` tag is observed — see that hook's row above. Schema v3 (INV-095) adds the bundled-skill payload gate: no longer pure observability. Bundled skills inject their whole reference tree as a **user-role text block, not a tool_result** (the result is ~27 chars), so no `PostToolUse` fires and no tkr filter can ever see it — the measured `claude-api` injection cost ~250K tokens against API ground truth and stays in the cached prefix for the rest of the session. Policy + measurement live in `lib/skill-bundle.js`; the hook only does I/O and emits. Threshold-based, never name-based. Default mode is **ask** (`permissionDecision:"ask"`, the human decides): the gate fires on 3.2% of Skill dispatches in the measured population (5 of 156 across 314 sessions), which is a targeted interruption rather than prompt fatigue, and `warn` offers no decision point at all — `systemMessage` renders only after the hook returns and the payload lands regardless. `TKR_SKILL_GATE=warn` de-escalates to notify-only, `=deny` blocks outright; both the ask and deny texts carry the on-disk file index so a refusal leaves the model able to read what it needed. An **absent** setting means `ask`; a **malformed** one degrades to `warn` — the weakest acting mode, never the strongest. Cost is always reported as a **range**, never a point (see `costRange()`): the tree overstates the payload while `bytes/4` understates these tokens by ~45%, and the two errors do not cancel. A **manual `/skill` is never gated** — it is the escape hatch the denial text points at. Every failure path allows |
-| `subagent-outcome.js` | SubagentStop | Bounded outcome row per observed subagent stop → `subagent-outcomes.jsonl`. Records `completion:"stopped"`, never "completed" — the payload carries no status. Schema v2 also parses the worker's fenced `tkr-handoff` trailer into optional `declared_*` fields: a claim channel, not a verification one — `verification` stays `"not_observed"` on every row. Does not join; `tkr route stats` does that at read time |
-| `session-summary.js` | Stop | End-of-session value report + statusline payload cleanup |
-| `team-push.js` | SessionEnd | Debounced team telemetry push (opt-in; `TKR_TEAM_DISABLE=1`) |
+| `tkr hook subagent-outcome` (native) | SubagentStop | Bounded outcome row per observed subagent stop → `subagent-outcomes.jsonl`. Records `completion:"stopped"`, never "completed" — the payload carries no status. Schema v2 also parses the worker's fenced `tkr-handoff` trailer into optional `declared_*` fields: a claim channel, not a verification one — `verification` stays `"not_observed"` on every row. Does not join; `tkr route stats` does that at read time. Ported from `subagent-outcome.js` in #664; the implementation is `internal/hooks/subagentoutcome.go`. The JS file is NOT deletion-pending: `lib/agent-completions.js` still `require()`s it directly for `parseHandoff`, and that library is loaded by `post-tool-call.js` on every tool call, which has not gone native |
+| `tkr hook session-summary` (native) | Stop, SessionEnd | Per-turn value report (Stop) + statusline shard cleanup (SessionEnd). Ported from `session-summary.js` in #664; the JS awaits deletion. |
+| `tkr hook team-push` (native) | SessionEnd | Debounced team telemetry push (opt-in; `TKR_TEAM_DISABLE=1`). Ported from `team-push.js` in #664; the JS awaits deletion. |
 | `keepalive/*.sh` | Stop / SessionEnd | Keepalive v2: async-rewake watcher, cleanup (activity signal moved to `user-prompt-submit.js` + `post-tool-call.js`; `resolve-project.sh` key must stay byte-identical to `lib/keepalive-activity.js`) |
 | `statusline.{sh,ps1}` | (statusLine) | Pressure indicators in prompt box |
 
@@ -72,7 +72,7 @@ InstructionsLoaded).
 - **PostToolUse receives the ORIGINAL tool input, not a PreToolUse
   `updatedInput`.** Claude Code executes the rewritten command but hands
   PostToolUse the command the model wrote. A PostToolUse hook therefore
-  **cannot** tell from its payload whether `tkr-rewrite.js` already
+  **cannot** tell from its payload whether the rewrite hook already
   routed that call through tkr. Measured 2026-08-10: 0 of 459
   compression-telemetry rows carry a `tkr` prefix, and 40 of 18,499 Bash
   calls across 744 transcripts do — those 40 being calls the model typed
@@ -104,17 +104,19 @@ InstructionsLoaded).
   are registered. A check buried inside `stdin.on('end')` still pays
   the full stdin-read timeout and the exit-time telemetry append on
   every invocation — defeating the kill switch's purpose.
-- **`memory-health.js` is a parallel port of the Go classifier, not a
-  caller of it.** `classify()`, the dead/forward keyword sets, the size
-  threshold, and the per-provenance stale table are duplicated from
-  `internal/cmd/memory.go` with no shared constant — the hook cannot
-  shell out to `tkr` inside a 500ms Stop budget. Any change to one side
-  must be made to the other in the same commit. The two test files
-  (`hooks/memory-health.test.js`, `internal/cmd/memory_test.go`) assert
-  the same cases so a one-sided edit fails on the side that was not
-  edited; that is the only thing standing between these files and silent
-  divergence. New per-file work in the classifier must stay I/O-free —
-  the budget already pays a read and a stat per file.
+- **The memory classifier has exactly one implementation again.**
+  `hooks/memory-health.js` was a 414-line parallel JS port of the Go
+  classifier, and the duplication rule that used to live here — "any change
+  to one side must be made to the other in the same commit" — is retired
+  because the JS side is gone. #664 took the Stop hook native first
+  (`tkr hook memory-health`), which left the file reachable only through
+  `lib/sessionstart/memory-nudge.js`; the Phase 4 cutover deleted that
+  requirer and the file with it. Both consumers now call
+  `internal/memhealth` directly: the Stop hook via
+  `internal/cmd/hook_memoryhealth.go`, the SessionStart nudge via
+  `internal/hooks/sessionstart/memorynudge.go`. New per-file work in the
+  classifier must still stay I/O-free — the 500ms Stop budget already pays
+  a read and a stat per file.
 - **Only a human may advance the keepalive activity marker.** That
   invariant is what makes `keepalive/<sid>/activity` an idle clock rather
   than a liveness ping, and it is why `lib/keepalive-activity.js` has
@@ -240,8 +242,8 @@ Convention: `~/.tkr/<feature>.{json,jsonl}` (honor `TKR_STATE_DIR` env):
   `bundle_*` fields, so the scraped and measured populations stay
   separable. Once the first invocation extracts the real tree, the
   temp-dir measurement takes over as ground truth. Refreshed automatically:
-  `session-start.js` (startup source only) runs
-  `refreshSkillManifestIfStale()` (`lib/sessionstart/skill-manifest-refresh.js`),
+  `tkr hook session-start` (startup source only) runs the skill-manifest
+  refresh (`internal/hooks/sessionstart/skillmanifestrefresh.go`),
   a cheap check — no manifest, wrong schema, or the described binary no
   longer stats to the same size+`floor(mtimeMs)` — followed by a detached,
   unref'd `node skill-scrape.js` rescrape (60s hard kill) when stale.
@@ -343,7 +345,8 @@ Convention: `~/.tkr/<feature>.{json,jsonl}` (honor `TKR_STATE_DIR` env):
   the first resolved tool batch, classified as `agent_first` /
   `direct_read_search_first` / `mixed_parallel_batch` / `other` /
   `unavailable`. Tool names only, never inputs or outputs. Dedup
-  marker `first-batch-<sid>.json` (swept at 24h by session-start.js).
+  marker `first-batch-<sid>.json` (swept at 24h by `tkr hook
+  session-start`).
   Kill switch: `TKR_FIRST_BATCH_DISABLED=1`.
 - `trajectory.json` — cap projection cache
 - `anomaly.json` — burn anomaly cache
@@ -400,7 +403,7 @@ Convention: `~/.tkr/<feature>.{json,jsonl}` (honor `TKR_STATE_DIR` env):
   as before. Off unless `TKR_RESIDENT_ENABLED=1`; `TKR_RESIDENT_DISABLED=1`
   wins over it. **Two starting points, one mechanism** (#287): the request
   path starts a runtime lazily on the first call that finds none, and
-  `session-start.js` calls `resident-client.warm()` on `startup`/`resume`
+  `tkr hook session-start` warms the runtime on `startup`/`resume`
   so that first call finds one already up. `warm()` reaches the SAME
   `maybeStart()` through the same gates — it changes when a start happens,
   never whether the rules apply — and it never blocks: no connect, no ping,
@@ -414,7 +417,7 @@ Convention: `~/.tkr/<feature>.{json,jsonl}` (honor `TKR_STATE_DIR` env):
   Go's `UnixMilli()` truncates, and a plain `===` rejects every endpoint.
 - `rewrite-heads.json` — rewrite-eligibility heads manifest (HOOK-003).
   Written by the Go binary (refresh-on-rewrite, `tkr init`, doctor);
-  read by `tkr-rewrite.js` to skip the subprocess for commands no rule
+  read by the native rewrite verb to skip the filter registry for commands no rule
   or filter can match. `complete:false` (or missing/stale/wrong-schema)
   disables the fast-path — never edit by hand; `tkr doctor` reports it.
 - `mode-<sid>.json` — per-session budget mode (PLAN-33). Resolved by
@@ -441,8 +444,8 @@ Scoping rules:
   CC's stdin JSON and export `TKR_SESSION_ID` so `tkr` subprocesses
   agree on the file.
 - **Lifecycle** — `session-summary.js` (Stop hook) deletes the current
-  session's file on clean exit. `session-start.js` runs
-  `sweepStaleStatuslineFiles()` to prune files >24h old from crashed
+  session's file on clean exit. `tkr hook session-start` runs
+  `SweepStaleStatuslineFiles()` to prune files >24h old from crashed
   sessions that never hit Stop. Without these, `$TMPDIR` grows
   unbounded on Windows where temp is not auto-cleaned.
 - **Why per-session** — earlier per-project scoping leaked the previous

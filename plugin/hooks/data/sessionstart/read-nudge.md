@@ -1,1 +1,0 @@
-**For unfamiliar files >100 lines, call `tkr_read` (MCP tool) with `mode=map` first** (5-20× fewer tokens). Use `mode=signatures` or `mode=lines:N-M` to narrow. Native Read only when editing, file <100 lines, or already loaded this session. Re-reads return `Unchanged since turn N` at zero cost.

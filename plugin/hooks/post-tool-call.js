@@ -68,7 +68,7 @@ const {
 const { maybeSpawnCommitRefresh } = require("./lib/posttool/commit-refresh");
 const { recordAgentCompletion } = require("./lib/agent-completions");
 const { interactiveAnswerTouch } = require("./lib/keepalive-activity");
-const { persistSessionEffort } = require("./lib/sessionstart/effort-log");
+const { persistSessionEffort } = require("./lib/effort-log");
 
 const HOOK_START = Date.now();
 let TIMING_NOTE = "ok";

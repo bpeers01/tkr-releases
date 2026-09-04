@@ -48,8 +48,9 @@
 //
 // First-per-prompt dedup: a marker file first-batch-<sid>.json holds
 // the last prompt_id recorded; a later batch on the same prompt is
-// skipped. Marker files are swept at 24h by session-start.js alongside
-// the other per-session state.
+// skipped. Marker files are swept at 24h by `tkr hook session-start`
+// (internal/hooks/sessionstart, SweepFirstBatchMarkers) alongside the
+// other per-session state.
 
 "use strict";
 
@@ -199,31 +200,13 @@ function appendRow(row) {
   fs.appendFileSync(target, JSON.stringify(row) + "\n");
 }
 
-// sweepStaleFirstBatchMarkers removes first-batch-<sid>.json markers
-// older than 24h — one accumulates per session id, and crashed sessions
-// never clean their own. Called from session-start.js alongside the
-// statusline/mode/work-file sweeps, same policy.
-const MARKER_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-
-function sweepStaleFirstBatchMarkers() {
-  const dir = stateDir();
-  let entries;
-  try {
-    entries = fs.readdirSync(dir);
-  } catch {
-    return;
-  }
-  const cutoff = Date.now() - MARKER_MAX_AGE_MS;
-  for (const name of entries) {
-    if (!name.startsWith("first-batch-") || !name.endsWith(".json")) continue;
-    const p = path.join(dir, name);
-    try {
-      if (fs.statSync(p).mtimeMs < cutoff) fs.unlinkSync(p);
-    } catch {
-      // best-effort
-    }
-  }
-}
+// The 24h sweep of first-batch-<sid>.json markers used to live here and be
+// called from session-start.js. It moved to Go with the #664 Phase 4
+// cutover — internal/hooks/sessionstart.SweepFirstBatchMarkers, called from
+// internal/cmd/hook_sessionstart.go alongside the statusline/mode/work-file
+// sweeps, same 24h policy. The JS copy was deleted rather than left
+// exported-and-uncalled, which is the unwired-producer shape wiring-guard
+// exists to catch.
 
 function main() {
   if (hooksDisabled() || firstBatchDisabled()) {
@@ -254,7 +237,7 @@ function main() {
     });
 }
 
-// Test surface + session-start sweep
+// Test surface
 module.exports = {
   SCHEMA_VERSION,
   LEDGER_BASENAME,
@@ -263,7 +246,6 @@ module.exports = {
   toolNamesFrom,
   firstBatchDisabled,
   ledgerPath,
-  sweepStaleFirstBatchMarkers,
 };
 
 if (require.main === module) {

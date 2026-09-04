@@ -437,7 +437,9 @@ fs.writeFileSync(
   // (true of the self-hosted CI runner — persistent HOME across jobs), that
   // real binary resolves first, classifies for real, and never produces the
   // "(stub)" cache entry this test asserts on. Pin TKR_BIN directly, same
-  // pattern as hooks/lib/sessionstart/resident-warm.test.js.
+  // pattern as the former hooks/lib/sessionstart/resident-warm.test.js
+  // (deleted at the #664 Phase 4 cutover; the Go twin is
+  // internal/hooks/sessionstart/residentwarm_test.go).
   process.env.TKR_BIN = path.join(binDir, "tkr");
   process.env.TKR_ROUTE_CACHE_DIR = tmp;
   // This is the one test that WANTS the synchronous classify — the stub

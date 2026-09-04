@@ -1,12 +1,23 @@
-// hooks/lib/sessionstart/effort-log.js
+// hooks/lib/effort-log.js
 //
 // Forward-looking effort + model telemetry.
 //
 // Claude Code does NOT record the active effort level in the per-turn
 // JSONL written to ~/.claude/projects/, which makes look-back analysis
 // of historical effort distribution impossible from that source. This
-// module captures effort at SessionStart so future analysis has a
-// per-session record going forward.
+// module captures effort so future analysis has a per-session record
+// going forward.
+//
+// It moved up out of lib/sessionstart/ at the #664 Phase 4 cutover, which
+// deleted that directory. Despite the old path it was never only a
+// SessionStart module: post-tool-call.js and user-prompt-submit.js both
+// call persistSessionEffort on every turn, because Claude Code withholds
+// effort from session-lifecycle hooks and the mid-session /effort change
+// only reaches `tkr top` through this file being rewritten (issue #123).
+// The SessionStart writer is Go now
+// (internal/hooks/sessionstart/effortlog.go); this JS copy serves the two
+// per-turn callers that are still JS, and the two must keep writing the
+// same row shape to the same file.
 //
 // Output: append-only JSONL at $TKR_STATE_DIR/session-effort.jsonl,
 // one row per SessionStart firing. Shape:
@@ -22,7 +33,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const { stateDir } = require("../state-dir");
+const { stateDir } = require("./state-dir");
 
 function detectEffort(env) {
   if (env.CLAUDE_CODE_EFFORT_LEVEL) {

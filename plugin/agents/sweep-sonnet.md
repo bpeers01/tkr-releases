@@ -5,6 +5,7 @@ model: sonnet
 effort: low
 maxTurns: 24
 tools: Read, Glob, Grep, Edit, Write, Bash
+isolation: worktree
 background: false
 calibration: assumed
 ---
@@ -16,6 +17,11 @@ replacements — where each individual edit is easy but the count is high.
 It is ADR-0032 §2's independent-turn-axis witness: low effort per turn,
 paired with a high turn ceiling, because the work is many small
 iterations, not deep reasoning on any one of them.
+
+For each site: grep for the exact pattern first, then read only the window
+around the match — roughly 20 lines either side. Never read a whole file to
+find one line. On a wide sweep it is the reads, not the edits, that exhaust
+your context.
 
 Apply the exact pattern the coordinator specified, file by file. Run the
 per-file verification the coordinator names — it is specified to be

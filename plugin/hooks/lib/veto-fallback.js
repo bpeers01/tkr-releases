@@ -44,8 +44,9 @@
 //
 // NOT A PORT OF route.Mutating(). mutationIntent below is deliberately a
 // small, independent, high-confidence SUBSET of internal/route/intent.go's
-// vocabulary, and it carries no obligation to track that file — unlike
-// memory-health.js, which must move in lockstep with its Go twin. The
+// vocabulary, and it carries no obligation to track that file — unlike the
+// former memory-health.js, which had to move in lockstep with its Go twin
+// until #664 deleted it. The
 // asymmetry is structural: this function never produces a verdict. It
 // only decides which spawns lose the benefit of the doubt in the seconds
 // when tkr is unreachable, so the two possible divergences are bounded

@@ -32,7 +32,7 @@ const { stateDir } = require("./lib/state-dir");
 const slashMarker = require("./lib/slash-marker");
 const { getSessionID } = require("./lib/session-id");
 const { activityTouch } = require("./lib/keepalive-activity");
-const { persistSessionEffort } = require("./lib/sessionstart/effort-log");
+const { persistSessionEffort } = require("./lib/effort-log");
 const { isSubagentContext } = require("./lib/subagent-context");
 const { isSystemEnvelope } = require("./lib/route-source");
 
@@ -1321,7 +1321,7 @@ function effortRank(e) {
 }
 
 // effortStatePath — per-session effort captured at SessionStart
-// (hooks/lib/sessionstart/effort-log.js persistSessionEffort). Env vars
+// (hooks/lib/effort-log.js persistSessionEffort). Env vars
 // stay the primary source: they track mid-session /effort changes, while
 // the file is a launch-time snapshot.
 function effortStatePath(sid) {
@@ -1771,6 +1771,222 @@ function computeWorkRouteDirective(input, tel) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Shaped @-mentions (#658) — @path:mode resolved to a tkr_read view with
+// ZERO model turns, injected as additionalContext at the same prefix
+// position the harness's own bare-@ attach uses.
+//
+// A bare @path is a harness-side attach (attachment.type="file" in the
+// user turn, rendered before any hook runs) that always carries the WHOLE
+// file, bypassing the >100-line tkr_read mode=map rule with no decision
+// point — no PreToolUse/PostToolUse fires, so tkr's own compression never
+// sees it either. @path:mode exploits the harness's own miss: probed
+// 2026-08-28, a literal path suffixed with `:mode` does not exist on disk,
+// so the harness declines to attach it and this hook can resolve it into
+// additionalContext instead — same injection point, same prefix position,
+// zero tool calls in the transcript. `@path#mode` looks similar but the
+// harness strips the `#suffix` and attaches the full file anyway — that
+// form is warned, never silently accepted. Full probe table and design:
+// https://github.com/bpeers01/tkr/issues/658
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SHAPED_MENTION_RE = /@(\S+?):(map|sig|skel|L\d+-\d+)\b/g;
+const HASH_MENTION_RE = /@(\S+?)#(map|sig|skel|L\d+-\d+)\b/g;
+
+// Per-mention subprocess budget. Deliberately looser than the <100ms hot
+// path default — this is a user-declared, higher-latency operation (a
+// real tkr fread over a file), not a background detector.
+const SHAPED_MENTION_TIMEOUT_MS = 3000;
+
+// Injection cap. The harness persists hook additionalContext over ~10KB
+// to a file with a 2KB preview (`<persisted-output>`, observed in
+// transcripts) instead of handing the model the real content — staying
+// under that threshold is what keeps this feature's whole point (the
+// model sees the actual view). Kept below the observed ~10KB line for
+// margin rather than measured to the byte.
+const SHAPED_MENTION_CAP_BYTES = 8 * 1024;
+
+// shapedModeToFreadArg maps the mention's short mode token to the value
+// `tkr fread -mode` accepts. Returns null when an `L<n>-<m>` token
+// doesn't parse as two integers (defensive — SHAPED_MENTION_RE already
+// constrains the shape).
+function shapedModeToFreadArg(shortMode) {
+  if (shortMode === "map") return "map";
+  if (shortMode === "sig") return "signatures";
+  if (shortMode === "skel") return "skeleton";
+  const m = /^L(\d+)-(\d+)$/.exec(shortMode);
+  if (!m) return null;
+  return `lines:${m[1]}-${m[2]}`;
+}
+
+// shapedModeLabel — human-readable view name for the header line.
+function shapedModeLabel(shortMode) {
+  if (shortMode === "map") return "map";
+  if (shortMode === "sig") return "signatures";
+  if (shortMode === "skel") return "skeleton";
+  return `lines ${shortMode.slice(1)}`;
+}
+
+// countLines — cheap line count for the header, read directly rather than
+// parsed out of the fread output (map/signatures/skeleton headers carry
+// byte size, not line count; lines:N-M carries neither). Best-effort: a
+// read failure (permissions, race after the existence check) returns -1
+// and the header omits the count rather than printing a wrong one.
+function countLines(absPath) {
+  try {
+    const buf = fs.readFileSync(absPath, "utf8");
+    if (buf.length === 0) return 0;
+    let n = 1;
+    for (let i = 0; i < buf.length; i++) {
+      if (buf.charCodeAt(i) === 10) n++;
+    }
+    return n;
+  } catch {
+    return -1;
+  }
+}
+
+// runFreadMode — one `tkr fread -mode <mode> <absPath>` call. Returns the
+// stdout text, or null on any failure (missing binary, non-zero exit,
+// timeout) — fail-open to "no injection for this mention", never a
+// partial or garbled one.
+function runFreadMode(absPath, freadMode) {
+  try {
+    const { cmd, argv } = tkrSpawnArgv(["fread", "-mode", freadMode, absPath]);
+    const res = spawnSync(cmd, argv, {
+      timeout: SHAPED_MENTION_TIMEOUT_MS,
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
+    });
+    if (!res || res.error || res.status !== 0) return null;
+    return (res.stdout || Buffer.alloc(0)).toString("utf8");
+  } catch {
+    return null;
+  }
+}
+
+// resolveShapedMention — resolve one @path:mode mention. Returns:
+//   { missing: true }        — path does not exist / is not a file
+//   { text }                 — header + body, ready to inject verbatim
+//   null                     — resolution failed (bad mode, fread error)
+//
+// Over-cap handling never emits a truncated view without saying so in the
+// header (same rule as the marker round-trip invariant in AGENTS.md) — it
+// degrades a non-map view to map first (usually enough, since map is the
+// smallest structural view), and only hard-truncates the map body itself
+// as a last resort, stating that too.
+function resolveShapedMention(relPath, shortMode, cwd) {
+  const freadMode = shapedModeToFreadArg(shortMode);
+  if (!freadMode) return null;
+
+  const absPath = path.resolve(cwd, relPath);
+  let stat;
+  try {
+    stat = fs.statSync(absPath);
+  } catch {
+    return { missing: true };
+  }
+  if (!stat.isFile()) return { missing: true };
+
+  const lineCount = countLines(absPath);
+
+  let body = runFreadMode(absPath, freadMode);
+  if (body === null) return null;
+
+  let label = shapedModeLabel(shortMode);
+  let degraded = false;
+  if (freadMode !== "map" && Buffer.byteLength(body, "utf8") > SHAPED_MENTION_CAP_BYTES) {
+    const mapBody = runFreadMode(absPath, "map");
+    if (mapBody !== null) {
+      body = mapBody;
+      label = "map";
+      degraded = true;
+    }
+  }
+
+  let truncated = false;
+  if (Buffer.byteLength(body, "utf8") > SHAPED_MENTION_CAP_BYTES) {
+    body = Buffer.from(body, "utf8").subarray(0, SHAPED_MENTION_CAP_BYTES).toString("utf8");
+    truncated = true;
+  }
+
+  const lineInfo = lineCount >= 0 ? `${lineCount}-line file` : "file";
+  const expandHint = /^L\d+-\d+$/.test(shortMode)
+    ? "widen with tkr_read mode=map for the full outline"
+    : "widen with tkr_read mode=lines:N-M";
+  let header = `[tkr @mention ${relPath}: ${label} view of ${lineInfo}`;
+  if (degraded) {
+    header += ` — requested ${shapedModeLabel(shortMode)} exceeded the injection cap, degraded to map`;
+  }
+  if (truncated) {
+    header += ` — view truncated at ${SHAPED_MENTION_CAP_BYTES} bytes, not the complete view`;
+  }
+  header += ` — ${expandHint}]`;
+
+  return { text: `${header}\n${body}` };
+}
+
+// shapedMentionContext — parse the RAW (pre-lowercase) prompt for
+// @path:mode mentions, resolve each via `tkr fread`, and return the
+// additionalContext to inject plus any systemMessage warnings (missing
+// file, or the @path#mode form the harness silently double-loads — see
+// the probe table in issue #658). Best-effort throughout: a failure to
+// resolve one mention is skipped, never fails the whole prompt. Dedup by
+// (path, mode) so a mention typed twice in one prompt injects once.
+function shapedMentionContext(data) {
+  const result = { context: "", systemMessage: "" };
+  try {
+    if (isSubagentContext(data)) return result;
+    if (process.env.TKR_SHAPED_MENTIONS_DISABLED === "1") return result;
+
+    const raw = data && typeof data.prompt === "string" ? data.prompt : "";
+    if (!raw || raw.indexOf("@") === -1) return result;
+
+    const cwd = process.cwd();
+    const parts = [];
+    const warnings = [];
+
+    const seen = new Set();
+    SHAPED_MENTION_RE.lastIndex = 0;
+    let match;
+    while ((match = SHAPED_MENTION_RE.exec(raw))) {
+      const relPath = match[1];
+      const shortMode = match[2];
+      const key = `${relPath}:${shortMode}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const resolved = resolveShapedMention(relPath, shortMode, cwd);
+      if (!resolved) continue;
+      if (resolved.missing) {
+        warnings.push(
+          `[tkr @mention: "${relPath}" not found relative to cwd — @${relPath}:${shortMode} produced no injection]`
+        );
+        continue;
+      }
+      parts.push(resolved.text);
+    }
+
+    const hashSeen = new Set();
+    HASH_MENTION_RE.lastIndex = 0;
+    while ((match = HASH_MENTION_RE.exec(raw))) {
+      const relPath = match[1];
+      if (hashSeen.has(relPath)) continue;
+      hashSeen.add(relPath);
+      warnings.push(
+        `[tkr @mention: "@${relPath}#${match[2]}" attached the FULL file — the harness strips "#suffix" ` +
+          `before matching. Use "@${relPath}:${match[2]}" (colon, not hash) for a shaped view.]`
+      );
+    }
+
+    result.context = parts.join("\n");
+    result.systemMessage = warnings.join("\n");
+    return result;
+  } catch {
+    return result;
+  }
+}
+
 // composeContext assembles non-empty parts into a single newline-joined
 // string. Returned to caller so the log writer can measure exact bytes
 // emitted without re-deriving them. Empty string when nothing to emit.
@@ -1780,17 +1996,23 @@ function composeContext(parts) {
 
 // Emit assembled context as a single hookSpecificOutput. Caller passes
 // the pre-composed text from composeContext so log row matches what
-// went out byte-for-byte.
-function emitAdditionalContext(text) {
-  if (!text) return;
-  process.stdout.write(
-    JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: "UserPromptSubmit",
-        additionalContext: text,
-      },
-    })
-  );
+// went out byte-for-byte. Optional systemMessage rides the same JSON
+// response for user-facing warnings (#658 shaped-mention diagnostics)
+// that must never enter model context — see hooks/CLAUDE.md's
+// Stderr/systemMessage split.
+function emitAdditionalContext(text, systemMessage) {
+  if (!text && !systemMessage) return;
+  const payload = {};
+  if (text) {
+    payload.hookSpecificOutput = {
+      hookEventName: "UserPromptSubmit",
+      additionalContext: text,
+    };
+  }
+  if (systemMessage) {
+    payload.systemMessage = systemMessage;
+  }
+  process.stdout.write(JSON.stringify(payload));
 }
 
 // sessionStartStatePath — per-session ISO-8601 timestamp file. First
@@ -1990,7 +2212,8 @@ function runMain(input) {
     }
 
     // Issue #123: refresh the standing active-effort snapshot every turn,
-    // not just at SessionStart (session-start.js also calls this). `tkr
+    // not just at SessionStart (`tkr hook session-start` also does this).
+    // `tkr
     // top` runs as a separate process with no view into this session's
     // live env vars, so a mid-session /effort change only reaches it via
     // this file being rewritten. Claude Code withholds both `input.effort`
@@ -2057,7 +2280,16 @@ function runMain(input) {
 
     // Collect context parts for normal prompts.
     const contextParts = [];
+    const systemMessageParts = [];
     const sid = earlySid;
+
+    // Shaped @-mentions (#658) — parsed from the untouched prompt text,
+    // independent of pressure telemetry, so it runs before the detectors
+    // below rather than being starved by anything downstream.
+    stageTrace.mark("shaped-mentions");
+    const shapedMentions = shapedMentionContext(data);
+    if (shapedMentions.context) contextParts.push(shapedMentions.context);
+    if (shapedMentions.systemMessage) systemMessageParts.push(shapedMentions.systemMessage);
 
     // H-5: read the statusline JSON ONCE per prompt. Every context helper
     // below previously did its own fs.readFileSync + JSON.parse of the
@@ -2100,7 +2332,8 @@ function runMain(input) {
 
     stageTrace.mark("emit");
     const text = composeContext(contextParts);
-    emitAdditionalContext(text);
+    const systemMessage = systemMessageParts.filter(Boolean).join("\n");
+    emitAdditionalContext(text, systemMessage);
     writeInjectionLogRow(data, text, undefined, undefined, tel);
   } catch {
     // Malformed input — ignore silently
@@ -2170,4 +2403,13 @@ module.exports = {
   writeInjectionLogRow,
   recordSlashMarker,
   recordManualSkillInvocation,
+  shapedMentionContext,
+  resolveShapedMention,
+  shapedModeToFreadArg,
+  shapedModeLabel,
+  countLines,
+  SHAPED_MENTION_RE,
+  HASH_MENTION_RE,
+  SHAPED_MENTION_CAP_BYTES,
+  SHAPED_MENTION_TIMEOUT_MS,
 };

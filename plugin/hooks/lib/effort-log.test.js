@@ -1,8 +1,8 @@
-// Tests for hooks/lib/sessionstart/effort-log.js — persistSessionEffort
+// Tests for hooks/lib/effort-log.js — persistSessionEffort
 // (ADR-0010 addendum: per-session active-effort state file consumed by
 // user-prompt-submit's detectActiveEffort fallback).
 //
-// Run: node --test hooks/lib/sessionstart/effort-log.test.js
+// Run: node --test hooks/lib/effort-log.test.js
 
 const test = require("node:test");
 const assert = require("node:assert");

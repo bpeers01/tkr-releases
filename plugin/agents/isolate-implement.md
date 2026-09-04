@@ -3,6 +3,7 @@ name: isolate-implement
 description: TKR-routed same-model context-isolation implementation — bounded edits with targeted verification, compressed return.
 maxTurns: 12
 tools: Read, Glob, Grep, Edit, Write, Bash
+isolation: worktree
 background: false
 calibration: assumed
 ---

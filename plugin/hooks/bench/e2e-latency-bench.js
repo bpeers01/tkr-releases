@@ -70,6 +70,42 @@ function benchHook(label, hookFile, payload, env) {
   };
 }
 
+// #664: the same measurement for a hook Claude Code now invokes as a Go
+// verb rather than `node <file>`. Identical shape to benchHook so the two
+// stay comparable in structure — but NOT in value. A native row measures
+// binary startup, not node boot, so a native label and its JS predecessor
+// are two populations and must never be read as one series. That is why
+// the ported scenarios below were renamed rather than left in place.
+function benchNativeHook(label, verb, payload, env) {
+  const input = JSON.stringify(payload);
+  const bin = process.env.TKR_BIN || "tkr";
+  const times = [];
+  for (let i = 0; i < ITER; i++) {
+    const t0 = process.hrtime.bigint();
+    const res = spawnSync(bin, ["hook", verb], {
+      input,
+      env,
+      windowsHide: true,
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    if (res.error) {
+      console.error(`${label}: spawn error: ${res.error.message}`);
+      return null;
+    }
+    times.push(ms);
+  }
+  times.sort((a, b) => a - b);
+  return {
+    label,
+    min: times[0],
+    p50: percentile(times, 50),
+    p95: percentile(times, 95),
+    max: times[times.length - 1],
+  };
+}
+
 // ── Bash hooks (issue #129 item 3) ──────────────────────────────────────
 //
 // The activity-touch fork storm (#129) shipped because no bench ever
@@ -184,17 +220,22 @@ function main() {
       tool_input: { command: "git status" },
       tool_response: { stdout: "On branch main\nnothing to commit\n", stderr: "", interrupted: false },
     }, env),
-    benchHook("tkr-rewrite", "tkr-rewrite.js", {
+    // #664: was benchHook("tkr-rewrite", "tkr-rewrite.js", ...) until
+    // PreToolUse(Bash) became `tkr hook rewrite`. Renamed, not re-pointed
+    // in place: the JS rows measured node boot and these measure binary
+    // startup, so a stored result under the old label is not a baseline
+    // for this one.
+    benchNativeHook("hook-rewrite", "rewrite", {
       session_id: SID,
       cwd: process.cwd(),
       tool_name: "Bash",
       tool_input: { command: "git status" },
     }, env),
     // HOOK-003 fast-path: a command no rewrite rule or filter can match.
-    // With the manifest present this must not spawn the binary — expect
-    // roughly the no-binary hook cost. The eligible scenario above stays
-    // binary-startup-bound (#67).
-    benchHook("tkr-rewrite-fastpath", "tkr-rewrite.js", {
+    // With the manifest present this must not reach the filter registry —
+    // expect roughly the bare-startup cost. The eligible scenario above
+    // stays registry-bound (#67).
+    benchNativeHook("hook-rewrite-fastpath", "rewrite", {
       session_id: SID,
       cwd: process.cwd(),
       tool_name: "Bash",

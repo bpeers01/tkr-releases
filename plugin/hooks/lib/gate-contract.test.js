@@ -4,7 +4,15 @@
 //
 // Failure here means a module is doing I/O inside its gate, which makes
 // it impossible for the orchestrator to assemble ctx once and re-use it
-// across the session-start composition.
+// across a hook's composition.
+//
+// The five sessionstart/* entries left this registry at the #664 Phase 4
+// cutover, when hooks/lib/sessionstart/ was deleted. Their gates are now
+// Go (internal/hooks/sessionstart/), where purity is a property of the
+// function signature rather than something a stub harness has to prove:
+// each takes hookutil.Config and returns a string, with no fs or exec
+// package in scope. What remains here is the posttool/ pair, which are
+// still JS.
 //
 // Modules under test enumerated in REGISTRY below. To add a module:
 //   1. Export `gate(ctx)` from it.
@@ -19,58 +27,6 @@ const child_process = require("node:child_process");
 // variants to exercise the decision branches.
 function loadRegistry() {
   return [
-    {
-      name: "sessionstart/cache-mechanics-nudge",
-      mod: require("./sessionstart/cache-mechanics-nudge"),
-      ctxs: [
-        { env: {}, cfg: {}, priorSessionCW: null },
-        { env: { TKR_CACHE_MECHANICS_DISABLED: "1" }, cfg: {} },
-        { env: {}, cfg: { cache_mechanics: { nudge: false } } },
-        { env: {}, cfg: { cache_mechanics: { nudge: true } } },
-        { env: {}, cfg: {}, priorSessionCW: 50_000 },
-        { env: {}, cfg: {}, priorSessionCW: 200_000 },
-      ],
-    },
-    {
-      name: "sessionstart/planning-nudge",
-      mod: require("./sessionstart/planning-nudge"),
-      ctxs: [
-        { env: {}, cfg: {} },
-        { env: { TKR_PLANNING_NUDGE_DISABLED: "1" }, cfg: {} },
-        { env: {}, cfg: { planning: { nudge: false } } },
-        { env: {}, cfg: { planning: { nudge: true } } },
-      ],
-    },
-    {
-      name: "sessionstart/read-nudge",
-      mod: require("./sessionstart/read-nudge"),
-      ctxs: [
-        { env: {}, cfg: {} },
-        { env: { TKR_LEANCTX_DISABLED: "1" }, cfg: {} },
-        { env: {}, cfg: { leanctx: { enabled: false } } },
-        { env: {}, cfg: { leanctx: { enabled: true } } },
-      ],
-    },
-    {
-      name: "sessionstart/memory-nudge",
-      mod: require("./sessionstart/memory-nudge"),
-      ctxs: [
-        { cfg: {} },
-        { cfg: { memory: { session_start_nudge: false } } },
-        { cfg: { memory: { session_start_nudge: true } } },
-      ],
-    },
-    {
-      name: "sessionstart/brevity",
-      mod: require("./sessionstart/brevity"),
-      ctxs: [
-        { mode: "full" },
-        { mode: "lite" },
-        { mode: "ultra" },
-        { mode: "off" },
-        { mode: undefined },
-      ],
-    },
     {
       name: "posttool/cap-nudge",
       mod: require("./posttool/cap-nudge"),
@@ -216,10 +172,5 @@ test("registry covers expected modules", () => {
   assert.deepEqual(names, [
     "posttool/cap-nudge",
     "posttool/ctx-breakpoint",
-    "sessionstart/brevity",
-    "sessionstart/cache-mechanics-nudge",
-    "sessionstart/memory-nudge",
-    "sessionstart/planning-nudge",
-    "sessionstart/read-nudge",
   ]);
 });

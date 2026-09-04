@@ -1,1 +1,0 @@
-**Plan context-aware.** Cost compounds — turn-1 token = 21× effective. Cluster planned steps by shared files; cross-domain jumps cost 10-30K fresh tokens. Keep dependency edges (A→B) in one session. For fact-finding, prefer `tkr search "X"` then read the top hit over bulk reads. Skip clustering for <5 tasks.

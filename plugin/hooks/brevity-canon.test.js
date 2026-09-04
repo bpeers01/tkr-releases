@@ -1,9 +1,15 @@
-// BREV-002 drift guard: hooks/data/sessionstart/brevity-sections.json
+// BREV-002 drift guard: internal/hooks/sessionstart/data/brevity-sections.json
 // is the single source of truth for the per-level brevity rule text.
-// The session-start injector (hooks/lib/sessionstart/brevity.js) reads
-// it directly; skills/brevity/SKILL.md must quote each level's body
+// The session-start injector (internal/hooks/sessionstart/brevity.go)
+// go:embed's it; skills/brevity/SKILL.md must quote each level's body
 // verbatim (whitespace-normalized). Editing one copy without the other
 // fails here.
+//
+// The path moved at the #664 Phase 4 cutover: the JS copy this guard used
+// to read, hooks/data/sessionstart/brevity-sections.json, was deleted with
+// the rest of the JS session-start tree. The guard itself still belongs in
+// JS because the other side of the comparison is a markdown skill file, not
+// Go.
 "use strict";
 
 const test = require("node:test");
@@ -12,7 +18,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const SECTIONS_PATH = path.join(
-  __dirname, "data", "sessionstart", "brevity-sections.json",
+  __dirname, "..", "internal", "hooks", "sessionstart", "data",
+  "brevity-sections.json",
 );
 const SKILL_PATH = path.join(
   __dirname, "..", "skills", "brevity", "SKILL.md",

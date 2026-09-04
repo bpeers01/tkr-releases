@@ -47,7 +47,7 @@ tkr integrates with Claude Code via hooks:
 - **PreToolUse (`tkr-rewrite.js`)** — rewrites Bash commands to use tkr automatically
 - **PreToolUse (`agent-search-inject.js`)** — injects tkr search guidance into Explore sub-agent prompts
 - **PostToolUse (`post-tool-call.js`)** — compresses tool output; nudges toward tkr search after 3+ consecutive Read/Glob/Grep calls (includes auto-search results)
-- **SessionStart (`session-start.js`)** — injects search-first guidance and brevity mode
+- **SessionStart (`tkr hook session-start`)** — injects search-first guidance and brevity mode
 - **UserPromptSubmit (`user-prompt-submit.js`)** — brevity reinforcement
 
 Run `tkr init` to install hooks.
