@@ -178,6 +178,24 @@ If missing, re-run `tkr init -g`. If Claude Code was running during `init`, rest
 
 ---
 
+## Claude Code plugin (any platform)
+
+### Plugin installed but every hook fails / MCP server won't connect
+
+First diagnostic: run `tkr --version` in the same shell Claude Code
+inherits its PATH from. If that fails ("command not found" / not
+recognized), the plugin has no binary to invoke — the marketplace
+payload does not bundle one, and every `plugin.json` hook and the
+`mcpServers.tkr` entry both invoke `tkr` by bare name, relying on it
+already being on PATH
+([ADR-0041](decisions/0041-tkr-binary-is-path-installed-not-payload-resident.md)).
+
+Fix: install `tkr` on PATH first (`docs/DISTRIBUTION.md` §1/§1b —
+curl/`irm`/`go install`), then reinstall or restart the plugin. This
+is not something the plugin can bootstrap itself into; a
+marketplace-only install with no binary anywhere on PATH is not a
+supported configuration.
+
 ## All platforms
 
 ### `tkr <cmd>` exits 1 for a missing binary where a shell reports 127
