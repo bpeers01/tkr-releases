@@ -36,7 +36,6 @@
 _keepalive_resolve_sid() {
   local sid=""
   local py
-  py="$(tkr_resolve_python)"
 
   sid="${TKR_SESSION_ID:-}"
   KEEPALIVE_PAYLOAD_CWD=""
@@ -47,7 +46,14 @@ _keepalive_resolve_sid() {
   # key input) — stdin is consumed here, so it cannot be parsed again
   # later. When this branch is skipped (env sid present / no pipe),
   # KEEPALIVE_PAYLOAD_CWD stays empty and callers fall back to $PWD.
-  if [ -z "$sid" ] && [ ! -t 0 ] && command -v "$py" >/dev/null 2>&1; then
+  #
+  # tkr_resolve_python is called ONLY inside this branch, not up front:
+  # `tkr claude` sets TKR_SESSION_ID for the overwhelming majority of
+  # invocations, so the common case never needs it. SessionEnd hooks share
+  # a combined 1.5s budget in Claude Code (see .claude-plugin/plugin.json's
+  # `timeout` on this hook) — every avoidable candidate lookup is worth
+  # skipping on that path, even a cheap one.
+  if [ -z "$sid" ] && [ ! -t 0 ] && py="$(tkr_resolve_python)" && command -v "$py" >/dev/null 2>&1; then
     local parsed=""
     parsed="$("$py" -c '
 import json, re, sys

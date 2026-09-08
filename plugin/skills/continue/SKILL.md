@@ -52,10 +52,20 @@ prior skill name.
 
 ```
 <tkr-carryover> block already in this session's context?
-└── yes → STOP. Say which file is already loaded and stop. HAND-005
-          auto-injected it at SessionStart; re-reading spends the
-          tokens the /clear was taken to reclaim. Continue only if
-          the user asks for a different file.
+├── yes, AND you can see BOTH the `tkr-carryover-end:<8-hex>` line
+│   AND the closing `</tkr-carryover>` tag
+│   → STOP. Say which file is already loaded and stop. HAND-005
+│     auto-injected it at SessionStart; re-reading spends the tokens
+│     the /clear was taken to reclaim. Continue only if the user asks
+│     for a different file.
+├── yes, but the end sentinel or the closing tag is MISSING
+│   → the delivery was truncated (INV-241: tkr's own "auto-loaded"
+│     notice does not mean the full body reached you — the hook
+│     channel can silently truncate a large payload to a preview).
+│     Do NOT summarize from the fragment you have. Read the file named
+│     in the block's `path=` attribute with native Read and use that
+│     as FILE PATH below.
+└── no block in context at all → continue down the tree.
 
 explicit path arg (contains "/" or ends ".md")?
 └── yes → FILE PATH on that file (skip freshness gating, see above)
@@ -163,6 +173,14 @@ done its job before being invoked — see the first branch of the decision
 tree. Any other combination falls back to the nudges above, so the
 advisory is still the common case. Kill switch:
 `TKR_AUTO_CONTINUE_DISABLED=1`.
+
+The 24KB figure bounds what the hook is willing to *inline*, not what
+actually reaches the model (INV-241) — the hook's own stdout can be
+truncated by a channel tkr does not control, independent of file size.
+That's why the block carries a `tkr-carryover-end:<hash>` sentinel plus
+the closing tag as a self-check, rather than the notice simply asserting
+delivery: check for both before treating the block as complete (first
+branch of the decision tree above).
 
 ## Backing CLI (JSONL path only)
 

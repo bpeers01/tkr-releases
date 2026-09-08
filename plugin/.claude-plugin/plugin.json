@@ -1,6 +1,6 @@
 {
   "name": "tkr",
-  "version": "5.26.0",
+  "version": "5.27.0",
   "description": "Token Reducer \u2014 unified token efficiency plugin for Claude Code. Tool output compression, semantic search, capacity-aware delegation, and output brevity.",
   "author": {
     "name": "Brantley Peers"
@@ -19,7 +19,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/pre-compact.js"
+            "command": "tkr hook pre-compact",
+            "timeout": 30
           }
         ]
       }
@@ -40,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/agent-search-inject.js"
+            "command": "tkr hook agent-search-inject"
           }
         ]
       },
@@ -69,7 +70,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/skill-invoked.js"
+            "command": "tkr hook skill-invoked"
           }
         ]
       }
@@ -77,10 +78,6 @@
     "SessionStart": [
       {
         "hooks": [
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/bin/tkr-launcher.js --ensure"
-          },
           {
             "type": "command",
             "command": "tkr hook session-start"
@@ -93,7 +90,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/post-tool-call.js"
+            "command": "tkr hook post-tool-call"
           }
         ]
       },
@@ -102,7 +99,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/cli-corrections-injector.js"
+            "command": "timeout 5 tkr hook cli-corrections",
+            "timeout": 10
           }
         ]
       }
@@ -112,7 +110,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/post-tool-batch.js"
+            "command": "tkr hook post-tool-batch",
+            "timeout": 30
           }
         ]
       }
@@ -122,7 +121,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/user-prompt-submit.js",
+            "command": "tkr hook user-prompt-submit",
             "timeout": 10
           }
         ]
@@ -168,15 +167,18 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/keepalive/cleanup.sh"
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/keepalive/cleanup.sh",
+            "timeout": 20
           },
           {
             "type": "command",
-            "command": "tkr hook team-push"
+            "command": "tkr hook team-push",
+            "timeout": 20
           },
           {
             "type": "command",
-            "command": "tkr hook session-summary"
+            "command": "tkr hook session-summary",
+            "timeout": 20
           }
         ]
       }
@@ -195,9 +197,8 @@
   },
   "mcpServers": {
     "tkr": {
-      "command": "node",
+      "command": "tkr",
       "args": [
-        "${CLAUDE_PLUGIN_ROOT}/bin/tkr-launcher.js",
         "mcp"
       ]
     }

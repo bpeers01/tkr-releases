@@ -276,17 +276,14 @@ test("writeManifest: lands atomically at TKR_STATE_DIR/skill-manifest.json and r
     const leftovers = fs.readdirSync(stateDirPath).filter((f) => f.includes(".tmp-"));
     assert.deepEqual(leftovers, []);
 
-    const prevStateDir = process.env.TKR_STATE_DIR;
-    process.env.TKR_STATE_DIR = stateDirPath;
-    try {
-      const entry = sb.manifestEntryFor("batch", { root: path.join(os.tmpdir(), "tkr-skill-scrape-nonexistent-root") });
-      assert.ok(entry, "manifestEntryFor should resolve the round-tripped row");
-      assert.equal(entry.name, "batch");
-      assert.equal(entry.hasTree, false);
-    } finally {
-      if (prevStateDir === undefined) delete process.env.TKR_STATE_DIR;
-      else process.env.TKR_STATE_DIR = prevStateDir;
-    }
+    // The round trip through the CONSUMER moved to Go with #664.
+    // manifestEntryFor is now internal/skillbundle's, so asserting it here
+    // would only prove two JS functions agree with each other while the code
+    // that actually reads this file in production is not exercised at all.
+    // internal/skillbundle's TestJSScraperAndGoReaderAgree runs THIS module's
+    // writeManifest through node and asserts the Go reader accepts what it
+    // wrote — schema constant, binarySize and the Math.floor(mtimeMs) vs
+    // ModTime().UnixMilli() freshness pair included.
   } finally {
     fs.rmSync(stateDirPath, { recursive: true, force: true });
     fs.rmSync(binDir, { recursive: true, force: true });

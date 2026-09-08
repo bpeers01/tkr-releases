@@ -20,6 +20,9 @@ const {
   shapedModeLabel,
   countLines,
   SHAPED_MENTION_CAP_BYTES,
+  barePathMentionContext,
+  classifyBarePathCandidate,
+  BARE_PATH_BULK_THRESHOLD,
 } = require("./user-prompt-submit.js");
 
 // ── shapedModeToFreadArg / shapedModeLabel ──────────────────────────────────
@@ -312,6 +315,159 @@ test("shapedMentionContext: TKR_SHAPED_MENTIONS_DISABLED=1 kill switch short-cir
   } finally {
     if (prev === undefined) delete process.env.TKR_SHAPED_MENTIONS_DISABLED;
     else process.env.TKR_SHAPED_MENTIONS_DISABLED = prev;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── barePathMentionContext (#752) — bare absolute paths, no @ sigil ────────
+
+test("classifyBarePathCandidate: file | dir | unknown, disk-stat authoritative", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-barepath-classify-"));
+  try {
+    const file = path.join(dir, "f.js");
+    fs.writeFileSync(file, "a\n");
+    assert.strictEqual(classifyBarePathCandidate(file), "file");
+    assert.strictEqual(classifyBarePathCandidate(dir), "dir");
+    assert.strictEqual(classifyBarePathCandidate(path.join(dir, "nope.js")), "unknown");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("barePathMentionContext: bare absolute path to an existing file injects a map view, zero warnings", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-barepath-ok-"));
+  try {
+    const fixture = path.join(dir, "f.js");
+    fs.writeFileSync(fixture, "a\nb\n");
+    const shim = installFreadShim(dir, { map: "# Outline: f.js\nL1 fn a\n" });
+    withTkrBin(shim, () => {
+      const res = barePathMentionContext({ prompt: `please look at ${fixture} for context` });
+      assert.ok(
+        res.context.startsWith(`[tkr path ${fixture}: map view of 3-line file`),
+        `unexpected header: ${res.context.split("\n")[0]}`
+      );
+      assert.match(res.context, /widen with tkr_read mode=lines:N-M\]/);
+      assert.match(res.context, /# Outline: f\.js/);
+      assert.strictEqual(res.systemMessage, "");
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("barePathMentionContext: a path inside a ``` fence injects nothing", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-barepath-fence-"));
+  try {
+    const fixture = path.join(dir, "f.js");
+    fs.writeFileSync(fixture, "a\n");
+    const res = barePathMentionContext({ prompt: "```\n" + fixture + "\n```" });
+    assert.deepStrictEqual(res, { context: "", systemMessage: "" });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("barePathMentionContext: a prompt at or over the bulk threshold injects nothing", () => {
+  const parts = [];
+  for (let i = 0; i < BARE_PATH_BULK_THRESHOLD; i++) parts.push(`/tmp/dump/x${i}.log`);
+  const res = barePathMentionContext({ prompt: parts.join(" ") });
+  assert.deepStrictEqual(res, { context: "", systemMessage: "" });
+});
+
+test("barePathMentionContext: a bare path to a directory injects nothing", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-barepath-dir-"));
+  try {
+    const res = barePathMentionContext({ prompt: `write output into ${dir} please` });
+    assert.deepStrictEqual(res, { context: "", systemMessage: "" });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("barePathMentionContext: a bare path to a nonexistent file injects nothing, silently", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-barepath-missing-"));
+  try {
+    const missing = path.join(dir, "nope.js");
+    const res = barePathMentionContext({ prompt: `check ${missing} for details` });
+    assert.deepStrictEqual(res, { context: "", systemMessage: "" });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("barePathMentionContext: a path already @-mentioned is left to the harness, not double-loaded", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-barepath-sigil-"));
+  try {
+    const fixture = path.join(dir, "f.js");
+    fs.writeFileSync(fixture, "a\n");
+    const res = barePathMentionContext({ prompt: `@${fixture}` });
+    assert.deepStrictEqual(res, { context: "", systemMessage: "" });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("barePathMentionContext: a path named twice in one prompt resolves once", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-barepath-dedup-"));
+  try {
+    const fixture = path.join(dir, "f.js");
+    fs.writeFileSync(fixture, "a\n");
+    const shim = installFreadShim(dir, { map: "# Outline: f.js\n" });
+    withTkrBin(shim, () => {
+      const res = barePathMentionContext({ prompt: `${fixture} and again ${fixture}` });
+      const occurrences = res.context.split("# Outline: f.js").length - 1;
+      assert.strictEqual(occurrences, 1);
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("barePathMentionContext: subagent dispatch is never parsed for bare paths", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-barepath-subagent-"));
+  try {
+    const fixture = path.join(dir, "f.js");
+    fs.writeFileSync(fixture, "a\n");
+    const res = barePathMentionContext({ prompt: fixture, agent_id: "agent-123" });
+    assert.deepStrictEqual(res, { context: "", systemMessage: "" });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("barePathMentionContext: TKR_BARE_PATH_MENTION_DISABLED=1 kill switch short-circuits", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-barepath-killswitch-"));
+  const prev = process.env.TKR_BARE_PATH_MENTION_DISABLED;
+  process.env.TKR_BARE_PATH_MENTION_DISABLED = "1";
+  try {
+    const fixture = path.join(dir, "f.js");
+    fs.writeFileSync(fixture, "a\n");
+    const res = barePathMentionContext({ prompt: fixture });
+    assert.deepStrictEqual(res, { context: "", systemMessage: "" });
+  } finally {
+    if (prev === undefined) delete process.env.TKR_BARE_PATH_MENTION_DISABLED;
+    else process.env.TKR_BARE_PATH_MENTION_DISABLED = prev;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("barePathMentionContext: byte budget is shared across candidates -- truncates, then skips, and says so", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tkr-barepath-budget-"));
+  try {
+    const f1 = path.join(dir, "a.js");
+    const f2 = path.join(dir, "b.js");
+    const f3 = path.join(dir, "c.js");
+    fs.writeFileSync(f1, "x\n");
+    fs.writeFileSync(f2, "x\n");
+    fs.writeFileSync(f3, "x\n");
+    const bigBody = "M".repeat(6000);
+    const shim = installFreadShim(dir, { map: bigBody });
+    withTkrBin(shim, () => {
+      const res = barePathMentionContext({ prompt: `${f1} then ${f2} then ${f3}` });
+      assert.match(res.context, /resolved 2 of 3 candidates/);
+      assert.match(res.context, /truncated, byte budget shared/);
+    });
+  } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

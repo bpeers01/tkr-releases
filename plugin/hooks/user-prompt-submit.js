@@ -1569,21 +1569,27 @@ function recordSlashMarker(input) {
   recordManualSkillInvocation(input);
 }
 
-// SKILL_INVOKED_SCHEMA_VERSION mirrors skill-invoked.js's row shape so a
-// manual row and an auto row are indistinguishable to any reader except
-// by invocation_source. Requiring the module (rather than duplicating the
-// constant) means a future schema bump only needs to happen once.
-const { SCHEMA_VERSION: SKILL_INVOKED_SCHEMA_VERSION } = require("./skill-invoked.js");
+// SKILL_INVOKED_SCHEMA_VERSION mirrors the AUTO writer's row shape so a
+// manual row and an auto row are indistinguishable to any reader except by
+// invocation_source.
+//
+// That writer is now Go: internal/hooks/skillinvoked.go's
+// skillInvokedSchemaVersion, since #664 took PreToolUse(Skill) native and
+// deleted hooks/skill-invoked.js, which this used to require. The constant is
+// therefore duplicated across a language boundary rather than shared, and the
+// pairing is enforced by a test that reads the Go source directly
+// (skill-schema-parity.test.js) — the same shape as the INTERACTIVE_TOOLS
+// parity test that reads keepalive/transcript-activity.py's tuple.
+const SKILL_INVOKED_SCHEMA_VERSION = 6;
 
 // recordManualSkillInvocation appends a skill-invoked ledger row directly
-// on this turn, instead of relying on hooks/skill-invoked.js's
-// PreToolUse(Skill) handler to observe it later.
+// on this turn, instead of relying on the native PreToolUse(Skill) hook
+// (internal/hooks/skillinvoked.go) to observe it later.
 //
 // Root cause (#278, settled by #205's live dogfood): a typed slash
 // command that resolves to a skill never dispatches the Skill tool at
 // all — Claude Code resolves it natively — so PreToolUse(Skill)
-// structurally never fires for this case and skill-invoked.js never
-// runs. hooks/lib/slash-marker.js's marker-and-join design assumed a
+// structurally never fires for this case and that hook never runs. hooks/lib/slash-marker.js's marker-and-join design assumed a
 // later reader would exist; it does not, for this path. This turn is the
 // only place the signal exists, so it is recorded here.
 //
@@ -1598,7 +1604,8 @@ const { SCHEMA_VERSION: SKILL_INVOKED_SCHEMA_VERSION } = require("./skill-invoke
 // inert, the same tolerance the pre-existing marker write already had.
 //
 // Never carries INV-095 gate fields — a manual invocation is never
-// gated (see skill-invoked.js), so there is no gate verdict to record.
+// gated (see internal/hooks/skillinvoked.go), so there is no gate verdict
+// to record.
 function recordManualSkillInvocation(input) {
   try {
     if (hooksDisabled()) return;
@@ -1987,6 +1994,196 @@ function shapedMentionContext(data) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Bare absolute-path mentions (#752) — a dragged/pasted absolute path
+// sitting in prose, no @ sigil, resolved to a `tkr_read mode=map` view with
+// ZERO model turns. Second arm after #658 above: that arm handles the form
+// the user OPTS INTO (@path:map); this handles the form VS Code/Explorer
+// produce without the user meaning to declare anything, which the harness
+// ignores outright (probe rows 4-5, issue #752) — no attachment, no
+// picker, nothing, so the content otherwise arrives 1-2 turns later through
+// a Read the model has to decide to make. Same injection point, same
+// resolver (runFreadMode), reused rather than reimplemented.
+//
+// Measured 2026-09-03 (scripts/session_analysis/mention_ceiling.py,
+// commit a44b8d30): absolute-path FILE candidates in prose follow at 32.5%
+// (n=1,388/800 sessions). A cwd-scoped restriction was priced and refuted
+// (commit 99770aae): 93.7% of the population is out-of-project, and it is
+// followed slightly MORE often (32.6% vs 30.7%), so no project-root gate
+// exists here — see issue #752 Design.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Absolute-path candidate shape only — mirrors the two absolute branches of
+// PATH_RE in scripts/session_analysis/mention_ceiling.py so the live
+// detector and the offline measurement agree on what a path is. The
+// relative-with-extension branch is deliberately excluded: #752 takes the
+// file arm only (relative paths in prose measure half the precision and
+// are a different population in kind — see "Not in scope" in the issue).
+const BARE_ABS_PATH_RE = /[A-Za-z]:\\[^\s"'`<>|]+|(?:\/[\w.-]+){2,}/g;
+
+// A prompt carrying this many path candidates reads as a paste (log, diff,
+// stack trace), not a declaration — same value and reasoning as the
+// offline scan's BULK_THRESHOLD.
+const BARE_PATH_BULK_THRESHOLD = 8;
+
+// bareAbsPathFences — character ranges inside ``` fences. A path quoted in
+// a pasted log or diff is not a declaration, however few of them there
+// are. Mirrors fenced_spans() in mention_ceiling.py.
+function bareAbsPathFences(txt) {
+  const spans = [];
+  let openAt = null;
+  const re = /```/g;
+  let m;
+  while ((m = re.exec(txt))) {
+    if (openAt === null) {
+      openAt = re.lastIndex;
+    } else {
+      spans.push([openAt, m.index]);
+      openAt = null;
+    }
+  }
+  if (openAt !== null) spans.push([openAt, txt.length]);
+  return spans;
+}
+
+function bareAbsPathInAnySpan(start, end, spans) {
+  return spans.some(([s, e]) => s <= start && end <= e);
+}
+
+// bareAbsPathAlreadySigiled — true when the candidate is immediately
+// preceded by "@" with no whitespace between. That form is the harness's
+// own — per #752 probe row 3, @<abspath> already attaches the whole file —
+// so this detector must never double-load what the harness already
+// claimed.
+function bareAbsPathAlreadySigiled(txt, start) {
+  return /@\S*$/.test(txt.slice(0, start));
+}
+
+// classifyBarePathCandidate — file | dir | unknown, disk-stat authoritative.
+// Gate 5 below (must resolve NOW) already requires a successful stat, which
+// is why this needs no extension fallback the way the offline scan's
+// path_class() does — that fallback only matters for paths that no longer
+// resolve, and gate 5 excludes those outright. A directory classifies out:
+// there is nothing to inject (#752 "Not in scope" — a directory needs a
+// listing, not a map).
+function classifyBarePathCandidate(absPath) {
+  try {
+    const st = fs.statSync(absPath);
+    if (st.isFile()) return "file";
+    if (st.isDirectory()) return "dir";
+    return "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+// barePathMentionContext — parse the RAW prompt for bare absolute file
+// paths (no @ sigil) and resolve each via runFreadMode(path, "map"), the
+// same resolver #658 uses. A candidate fires only if all five gates hold
+// (issue #752 Design):
+//   1. matches the absolute branch of PATH_RE (BARE_ABS_PATH_RE)
+//   2. classifies as `file` (classifyBarePathCandidate)
+//   3. not inside a ``` fence, and the prompt stays under the bulk
+//      threshold — checked over EVERY raw match, fenced or not, since one
+//      candidate inside a fence is still evidence the prompt is a paste
+//   4. not immediately preceded by "@" (bareAbsPathAlreadySigiled)
+//   5. resolves to a readable file that exists now — folded into gate 2's
+//      stat, and into runFreadMode's fail-open-to-null on a read failure
+//
+// SHAPED_MENTION_CAP_BYTES / SHAPED_MENTION_TIMEOUT_MS are spent as
+// budgets SHARED ACROSS the prompt's candidates, in document order — #658
+// never needed this because a shaped mention is one file the user asked
+// for, while a bare-path prompt can legitimately name up to
+// BARE_PATH_BULK_THRESHOLD-1 before the bulk gate trips. A candidate the
+// budget could not reach is never silently dropped from a partial
+// injection: the header states how many of N resolved.
+//
+// Silent on refusal — no systemMessage, ever (unlike #658, which warns on
+// a malformed shaped mention because the user typed `:map` deliberately).
+// Here the user typed a path in prose and may have wanted nothing at all;
+// a warning per unresolvable path would be noise on two fires in three.
+function barePathMentionContext(data) {
+  const result = { context: "", systemMessage: "" };
+  try {
+    if (isSubagentContext(data)) return result;
+    if (process.env.TKR_BARE_PATH_MENTION_DISABLED === "1") return result;
+
+    const raw = data && typeof data.prompt === "string" ? data.prompt : "";
+    if (!raw) return result;
+
+    BARE_ABS_PATH_RE.lastIndex = 0;
+    const matches = [];
+    let m;
+    while ((m = BARE_ABS_PATH_RE.exec(raw))) {
+      matches.push({ text: m[0], start: m.index });
+    }
+    // Bulk gate applies to the whole prompt, over every raw match — a
+    // paste is a paste whether or not any one candidate sits in a fence.
+    if (matches.length === 0 || matches.length >= BARE_PATH_BULK_THRESHOLD) return result;
+
+    const fences = bareAbsPathFences(raw);
+    const cwd = process.cwd();
+    const seen = new Set();
+
+    const eligible = [];
+    for (const cand of matches) {
+      const end = cand.start + cand.text.length;
+      if (bareAbsPathInAnySpan(cand.start, end, fences)) continue;
+      if (bareAbsPathAlreadySigiled(raw, cand.start)) continue;
+      const absPath = path.resolve(cwd, cand.text);
+      if (seen.has(absPath)) continue;
+      seen.add(absPath);
+      if (classifyBarePathCandidate(absPath) !== "file") continue;
+      eligible.push({ relText: cand.text, absPath });
+    }
+    if (eligible.length === 0) return result;
+
+    const parts = [];
+    let byteBudget = SHAPED_MENTION_CAP_BYTES;
+    let elapsedMs = 0;
+    let resolved = 0;
+
+    for (const c of eligible) {
+      if (elapsedMs >= SHAPED_MENTION_TIMEOUT_MS || byteBudget <= 0) break;
+
+      const t0 = Date.now();
+      const body = runFreadMode(c.absPath, "map");
+      elapsedMs += Date.now() - t0;
+      if (body === null) continue;
+
+      const lineCount = countLines(c.absPath);
+      const lineInfo = lineCount >= 0 ? `${lineCount}-line file` : "file";
+
+      let text = body;
+      let truncated = false;
+      if (Buffer.byteLength(text, "utf8") > byteBudget) {
+        text = Buffer.from(text, "utf8").subarray(0, Math.max(0, byteBudget)).toString("utf8");
+        truncated = true;
+      }
+      byteBudget -= Buffer.byteLength(text, "utf8");
+
+      let header = `[tkr path ${c.relText}: map view of ${lineInfo} — widen with tkr_read mode=lines:N-M`;
+      if (truncated) header += " — truncated, byte budget shared across this prompt's paths";
+      header += "]";
+      parts.push(`${header}\n${text}`);
+      resolved++;
+    }
+
+    if (parts.length === 0) return result;
+
+    let out = parts.join("\n");
+    if (resolved < eligible.length) {
+      out =
+        `[tkr bare paths: resolved ${resolved} of ${eligible.length} candidates — ` +
+        `remainder declined by the shared byte/time budget]\n${out}`;
+    }
+    result.context = out;
+    return result;
+  } catch {
+    return result;
+  }
+}
+
 // composeContext assembles non-empty parts into a single newline-joined
 // string. Returned to caller so the log writer can measure exact bytes
 // emitted without re-deriving them. Empty string when nothing to emit.
@@ -2291,6 +2488,12 @@ function runMain(input) {
     if (shapedMentions.context) contextParts.push(shapedMentions.context);
     if (shapedMentions.systemMessage) systemMessageParts.push(shapedMentions.systemMessage);
 
+    // Bare absolute-path mentions (#752) — same untouched prompt text,
+    // right after the opt-in @-mention form above.
+    stageTrace.mark("bare-path-mentions");
+    const barePathMentions = barePathMentionContext(data);
+    if (barePathMentions.context) contextParts.push(barePathMentions.context);
+
     // H-5: read the statusline JSON ONCE per prompt. Every context helper
     // below previously did its own fs.readFileSync + JSON.parse of the
     // same file (6-8 reads per UserPromptSubmit). readStatusline returns
@@ -2412,4 +2615,8 @@ module.exports = {
   HASH_MENTION_RE,
   SHAPED_MENTION_CAP_BYTES,
   SHAPED_MENTION_TIMEOUT_MS,
+  barePathMentionContext,
+  classifyBarePathCandidate,
+  BARE_ABS_PATH_RE,
+  BARE_PATH_BULK_THRESHOLD,
 };
