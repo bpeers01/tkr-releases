@@ -9,6 +9,20 @@ It works on four fronts at once: compresses bloated tool output before Claude re
 
 Built for Claude Code on **Pro, Max, or Team**. API users get the same wins paid in dollars instead of cap headroom (`tkr gain --economics`). Binaries ship every release for macOS, Linux, and Windows; automated release-validation smoke testing currently covers Linux and Windows only (see Requirements). Single static binary, zero runtime dependencies.
 
+> **What's new in v5.27.0** — tkr no longer needs Node.js installed at all.
+> Every hook that used to shell out to a Node script now runs natively
+> inside the `tkr` binary itself, and the plugin's startup step and its
+> MCP server no longer bootstrap through Node either — just a plain
+> install of `tkr` on your PATH. Dropping a file path into a prompt
+> (drag-and-drop, or a path copied from your file explorer or editor, with
+> no special formatting) now gets picked up automatically instead of
+> sitting unread until Claude spends a turn opening it. Also ships the
+> first preview build of `tkr-workbench`, a desktop app that hosts your
+> agent sessions in one window instead of a terminal tab per session —
+> closing or crashing the window never kills a session, and reopening it
+> reconnects to everything still running.
+> [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
+>
 > **What's new in v5.26.0** — The code-graph feature no longer redoes
 > its full scan every time it fires. On an unchanged project it used to
 > take over a minute and read tens of gigabytes off disk just to
@@ -394,10 +408,10 @@ Claude Code, Gemini CLI, and Cursor rewrite commands automatically — no manual
 
 ```bash
 # macOS / Linux / Git Bash
-TKR_VERSION=v5.26.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
+TKR_VERSION=v5.27.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.26.0
+irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.27.0
 ```
 
 #### Manual download
@@ -771,7 +785,7 @@ When installed as a plugin, tkr registers 9 core on-demand skills invocable with
 ## Verify Installation
 
 ```bash
-tkr --version             # expected: tkr v5.26.0 (or newer)
+tkr --version             # expected: tkr v5.27.0 (or newer)
 tkr doctor                # health check — PASS/WARN/FAIL rows; exit 0 or 2
 tkr verify                # run built-in filter tests (342 should pass)
 ```
