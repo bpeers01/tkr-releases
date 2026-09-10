@@ -47,16 +47,43 @@
     Remove the installed app, its Start Menu shortcut, and its
     Add/Remove Programs entry. Does not touch the tkr CLI install.
 
+.PARAMETER Force
+    Skip the live-session confirmation prompt below and proceed anyway.
+    Required for any non-interactive run (piped `irm | iex` with no
+    console attached, a CI job, a scheduled task) that must complete
+    while sessions are running - without it, a non-interactive host with
+    live sessions refuses instead of hanging on a prompt it can't show.
+    `irm | iex` cannot pass switches, so set $env:TKR_WORKBENCH_FORCE = "1"
+    there instead.
+
+.DESCRIPTION (continued)
+    Both the upgrade swap below and -Uninstall end up replacing or
+    removing whatever tkr-workbench runtime process currently owns
+    $InstallDir. That runtime holds every managed session's process tree
+    in a Windows Job Object with KILL_ON_JOB_CLOSE
+    (internal/workbench/runtime/registry.go), so a session that is
+    "starting" or "running" in the runtime's sessions.json dies the
+    moment that process goes away - silently, with no chance to save
+    anything, because the child processes (claude, etc.) are killed with
+    the job. Before doing anything destructive, this script reads
+    sessions.json in the runtime data directory, checks which of those
+    rows still have their recorded session process alive, and
+    if any are, warns and asks for confirmation (default: no). A stale
+    sessions.json left behind by a crash does not trigger this - only a
+    row whose recorded PID is still actually running counts as live.
+
 .EXAMPLE
     irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install-workbench.ps1 | iex
     .\install-workbench.ps1 -Version 1.2.0
     .\install-workbench.ps1 -Uninstall
+    .\install-workbench.ps1 -Force
 #>
 
 param(
     [string]$Version = $env:TKR_WORKBENCH_VERSION,
     [string]$InstallDir = $env:TKR_WORKBENCH_INSTALL_DIR,
-    [switch]$Uninstall
+    [switch]$Uninstall,
+    [switch]$Force = ($env:TKR_WORKBENCH_FORCE -eq "1")
 )
 
 $ErrorActionPreference = "Stop"
@@ -93,6 +120,139 @@ if ($DataDir) {
 
 $ExePath = Join-Path $InstallDir "tkr-workbench.exe"
 $ShortcutPath = Join-Path ([System.Environment]::GetFolderPath("StartMenu")) "Programs\tkr-workbench.lnk"
+
+# --- Live-session detection ---------------------------------------------
+#
+# sessions.json is the runtime's registry (internal/workbench/runtime/registry.go
+# persistedRow / proto.ManagedSession, registry.go:35-49). Fields read
+# here, with the Go struct tag as the source of truth for the name:
+#   state (registry.go:145-148 / proto/session.go:136-149) - one of the
+#     four string values "starting"/"running"/"exited"/"ended".
+#   pid (proto/session.go:180: `json:"pid"`) - 0 while StateStarting ("No
+#     PID yet"), the root process of the session's Job Object once set.
+#   pid_start_ms (registry.go:41: `json:"pid_start_ms"`) - epoch ms
+#     creation time of that PID, persisted precisely so a *different*
+#     process that later inherits the same PID number is not mistaken
+#     for the session's own runtime (registry.go:37-40: "PIDs are
+#     recycled; a row whose PID is alive but whose creation time differs
+#     is a DIFFERENT process"). May be 0/absent for a row written before
+#     a PID existed.
+#   title, task, worktree, project_root - proto/session.go:164-196,
+#     display-only fields used for the warning below.
+#
+# A row is live only when its state is starting/running AND the OS
+# confirms its recorded pid is currently running. Checking state alone
+# would false-positive on a sessions.json left behind by a crash: the
+# Go restart rule (applyRestartRule, registry.go:139-165) only rewrites
+# a surviving row to "ended" the NEXT time that runtime starts, which
+# this script has no way to know has happened. Where pid_start_ms is
+# available this also cross-checks the live PID's own creation time
+# against it, for the same recycled-PID reason registry.go tracks that
+# field - a bare "is this PID alive" is not enough on Windows.
+function Get-LiveWorkbenchSessions {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path $Path)) { return @() }
+
+    try {
+        $Registry = Get-Content -Path $Path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        # Malformed sessions.json. A file this script can't parse is not
+        # evidence of a live session - do not block on it.
+        return @()
+    }
+
+    if (-not $Registry -or -not $Registry.sessions) { return @() }
+
+    $Live = @()
+    foreach ($Session in @($Registry.sessions)) {
+        if ($Session.state -ne "starting" -and $Session.state -ne "running") { continue }
+        if (-not $Session.pid -or [int]$Session.pid -le 0) { continue }
+
+        $Proc = Get-Process -Id ([int]$Session.pid) -ErrorAction SilentlyContinue
+        if (-not $Proc) { continue }
+
+        if ($Session.pid_start_ms -and [int64]$Session.pid_start_ms -gt 0) {
+            try {
+                $ActualStartMS = [long]([DateTimeOffset]$Proc.StartTime).ToUnixTimeMilliseconds()
+            } catch {
+                # Access denied reading StartTime (rare, e.g. a protected
+                # process) - can't confirm identity, so don't claim it.
+                continue
+            }
+            if ($ActualStartMS -ne [int64]$Session.pid_start_ms) {
+                # Same PID number, different process - the recycled-pid
+                # case registry.go's comment describes. Not live.
+                continue
+            }
+        }
+
+        $Live += [PSCustomObject]@{
+            Title       = $Session.title
+            Task        = $Session.task
+            Worktree    = $Session.worktree
+            ProjectRoot = $Session.project_root
+            Pid         = [int]$Session.pid
+            State       = $Session.state
+        }
+    }
+    # Deliberately NOT `return , $Live` (the usual don't-unroll-a-single-
+    # element-array idiom): every call site below wraps this call in
+    # @(...) itself, and combining both would double-wrap - a single
+    # pipeline object (the whole $Live array, however many or few
+    # elements) would come through @()'s collection as a length-1 outer
+    # array whose one element is $Live, so .Count reads 1 on every
+    # non-early-return path even when $Live is empty. Plain unrolling
+    # here plus @() at the call site is the correct pairing.
+    return $Live
+}
+
+# True when Read-Host can actually prompt someone: a piped `irm | iex`
+# with no console attached (or a CI/scheduled-task run) has stdin
+# redirected and nobody to answer, so Read-Host would either throw or
+# hang depending on host - neither of which this script should risk.
+function Test-IsInteractiveHost {
+    return ([Environment]::UserInteractive) -and (-not [Console]::IsInputRedirected)
+}
+
+$DataDirForSessions = if ($ResolvedData) { $ResolvedData } else { $DataDir }
+if ($DataDirForSessions) {
+    $SessionsFile = Join-Path $DataDirForSessions "sessions.json"
+    $LiveSessions = @(Get-LiveWorkbenchSessions -Path $SessionsFile)
+    if ($LiveSessions.Count -gt 0) {
+        Write-Warning "$($LiveSessions.Count) tkr-workbench session(s) are currently running:"
+        foreach ($Session in $LiveSessions) {
+            $Label = if ($Session.Title) { $Session.Title } elseif ($Session.Task) { $Session.Task } else { "(untitled session)" }
+            $Where = if ($Session.Worktree) { $Session.Worktree } elseif ($Session.ProjectRoot) { $Session.ProjectRoot } else { $null }
+            if ($Where) {
+                Write-Host "  - $Label  [$Where]"
+            } else {
+                Write-Host "  - $Label"
+            }
+        }
+        Write-Host ""
+        Write-Host "Continuing will replace the running tkr-workbench runtime, which ENDS" -ForegroundColor Yellow
+        Write-Host "these sessions and every process they hold (claude, etc.). Any turn in" -ForegroundColor Yellow
+        Write-Host "progress is lost; saved conversations can be resumed afterwards with" -ForegroundColor Yellow
+        Write-Host "'claude --continue' or 'claude --resume' in the affected worktree." -ForegroundColor Yellow
+        Write-Host ""
+
+        if ($Force) {
+            Write-Host "-Force given: continuing without confirmation."
+        } elseif (-not (Test-IsInteractiveHost)) {
+            Write-Error ("Refusing to continue non-interactively with live tkr-workbench sessions running. " +
+                "Re-run with -Force (or TKR_WORKBENCH_FORCE=1) to proceed anyway, or close the running sessions first.")
+            exit 1
+        } else {
+            $Answer = Read-Host "Continue and end these sessions? [y/N]"
+            if ($Answer -notmatch '^[Yy]') {
+                Write-Host "Aborted. No changes made."
+                # return, not exit: under `irm | iex` exit closes the user's shell.
+                return
+            }
+        }
+    }
+}
 
 # SHA-256 without Get-FileHash. A side-by-side PowerShell 7 install puts its
 # own module directories ahead of Windows PowerShell's in PSModulePath, so 5.1
@@ -158,8 +318,12 @@ if ($Uninstall) {
 
 # --- Detect architecture -------------------------------------------------
 
-$Arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
-if ($Arch -ne [System.Runtime.InteropServices.Architecture]::X64) {
+# RuntimeInformation.OSArchitecture came back empty in a user's Windows
+# PowerShell 5.1 session and refused an x64 machine. The environment is set
+# by Windows in every host; PROCESSOR_ARCHITEW6432 carries the real OS
+# architecture when this runs in 32-bit PowerShell on 64-bit Windows.
+$Arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+if ($Arch -ne "AMD64") {
     Write-Error "tkr-workbench Windows builds are only available for x64 (detected: $Arch)"
     exit 1
 }
