@@ -9,6 +9,20 @@ It works on four fronts at once: compresses bloated tool output before Claude re
 
 Built for Claude Code on **Pro, Max, or Team**. API users get the same wins paid in dollars instead of cap headroom (`tkr gain --economics`). Binaries ship every release for macOS, Linux, and Windows; automated release-validation smoke testing currently covers Linux and Windows only (see Requirements). Single static binary, zero runtime dependencies.
 
+> **What's new in v5.28.0** — Two new opt-in integrations. `tkr setup
+> opencode-go` walks you through enabling a second, fully manual
+> delegation route through OpenCode's Go models — your API key goes into
+> your OS's native protected credential store, never a plaintext config
+> file, and setup confirms your OpenCode billing balance is protected
+> before it writes anything. Separately, if you use Praxis (a local
+> decision-knowledge base), tkr can now consult it right before Claude
+> Code asks you a question and hand back any applicable guidance — off by
+> default, and it fails open (your question goes through unchanged) on
+> any error. Also fixes: Windows git operations failing near the 260-
+> character path limit, and delegated results now surviving reliably
+> through Claude Code's own output handling.
+> [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
+>
 > **What's new in v5.27.0** — tkr no longer needs Node.js installed at all.
 > Every hook that used to shell out to a Node script now runs natively
 > inside the `tkr` binary itself, and the plugin's startup step and its
@@ -408,10 +422,10 @@ Claude Code, Gemini CLI, and Cursor rewrite commands automatically — no manual
 
 ```bash
 # macOS / Linux / Git Bash
-TKR_VERSION=v5.27.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
+TKR_VERSION=v5.28.0 curl -fsSL https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.sh | sh
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.27.0
+irm https://raw.githubusercontent.com/bpeers01/tkr-releases/main/install.ps1 | iex -Version v5.28.0
 ```
 
 #### Manual download
@@ -625,6 +639,21 @@ Inspect traces from the CLI or via the `delegate_status` MCP tool inside a Claud
 
 ---
 
+### OpenCode Go (manual delegation route)
+
+A second, fully manual delegation transport alongside the OpenRouter loop above: routes a delegated task through OpenCode's Go models instead. Off by default — nothing changes until you opt in.
+
+```bash
+tkr setup opencode-go            # guided setup: stores your API key, confirms billing safety
+tkr setup opencode-go --status   # readiness check, no network call
+tkr setup opencode-go --verify   # one bounded live call against synthetic data
+tkr setup opencode-go --disable  # turn it off and remove the stored key
+```
+
+The API key is written to your OS's native protected credential store (Windows Credential Manager, macOS Keychain, or Linux Secret Service) — never a plaintext config file — and read back only after you explicitly authorize it. Setup also confirms "Use balance" is off in the OpenCode console before writing anything, so a delegated call can't land against a shared balance by mistake. `tkr doctor` reports readiness alongside every other integration.
+
+---
+
 ### OpenRouter Routing
 
 Beyond the delegation loop, `tkr openrouter on/off` routes Claude Code's own inference to OpenRouter-hosted models. Useful when a cheaper model is sufficient for the whole session.
@@ -709,6 +738,26 @@ What it actually shows: cap-units saved per channel, top burn drivers, before/af
 
 ---
 
+### Praxis Decision Checkpoint (opt-in)
+
+If you use [Praxis](https://github.com/bpeers01/praxis) — a local decision-knowledge base — tkr can consult it right before Claude Code asks you a question, and hand back Praxis's stored guidance as the reason if it has anything applicable, instead of asking you to remember it yourself. Off by default, and does nothing until you configure it:
+
+```toml
+# ~/.tkr/config.toml (or your platform config dir)
+[praxis]
+enabled = true
+repo = "/path/to/praxis-knowledge"  # the checkout containing knowledge/current.json
+```
+
+```bash
+tkr praxis status          # config, binary, repo, contract, one live consult probe
+tkr praxis status --json   # machine-readable
+```
+
+The hook fails open: a missing binary, a timeout, a malformed payload, or no applicable guidance all leave the question unchanged. Index freshness is Praxis's job, not tkr's — every call checks its own index and rebuilds it if stale. `TKR_PRAXIS_DISABLED=1` turns off just this hook; `TKR_HOOKS_DISABLED=1` turns off every tkr hook.
+
+---
+
 ## Track Your Savings
 
 ```bash
@@ -785,7 +834,7 @@ When installed as a plugin, tkr registers 9 core on-demand skills invocable with
 ## Verify Installation
 
 ```bash
-tkr --version             # expected: tkr v5.27.0 (or newer)
+tkr --version             # expected: tkr v5.28.0 (or newer)
 tkr doctor                # health check — PASS/WARN/FAIL rows; exit 0 or 2
 tkr verify                # run built-in filter tests (342 should pass)
 ```
