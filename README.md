@@ -9,6 +9,18 @@ It works on four fronts at once: compresses bloated tool output before Claude re
 
 Built for Claude Code on **Pro, Max, or Team**. API users get the same wins paid in dollars instead of cap headroom (`tkr gain --economics`). Binaries ship every release for macOS, Linux, and Windows; automated release-validation smoke testing currently covers Linux and Windows only (see Requirements). Single static binary, zero runtime dependencies.
 
+> **What's new in v5.29.0** — Claude's delegated-work helper gets its
+> own editing and search tools instead of shelling out through the
+> terminal: it can now batch several file edits into one safe call, and
+> search your project's index directly. If you use Praxis (a local
+> decision-knowledge base), it can now also catch a closing "should I
+> fix this?" moment, not just an explicit question — off by default.
+> Two reliability fixes: Praxis no longer silently drops writes on
+> Windows, and everyday hook operations (every terminal command,
+> prompt, and status-bar update) got faster by skipping a redundant
+> lookup most setups don't need.
+> [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
+>
 > **What's new in v5.28.0** — Two new opt-in integrations. `tkr setup
 > opencode-go` walks you through enabling a second, fully manual
 > delegation route through OpenCode's Go models — your API key goes into
@@ -834,7 +846,7 @@ When installed as a plugin, tkr registers 9 core on-demand skills invocable with
 ## Verify Installation
 
 ```bash
-tkr --version             # expected: tkr v5.28.0 (or newer)
+tkr --version             # expected: tkr v5.29.0 (or newer)
 tkr doctor                # health check — PASS/WARN/FAIL rows; exit 0 or 2
 tkr verify                # run built-in filter tests (342 should pass)
 ```
