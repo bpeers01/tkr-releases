@@ -1,6 +1,6 @@
 {
   "name": "tkr",
-  "version": "5.28.0",
+  "version": "5.29.0",
   "description": "Token Reducer \u2014 unified token efficiency plugin for Claude Code. Tool output compression, semantic search, capacity-aware delegation, and output brevity.",
   "author": {
     "name": "Brantley Peers"
@@ -155,6 +155,11 @@
     "Stop": [
       {
         "hooks": [
+          {
+            "type": "command",
+            "command": "timeout 5 tkr hook praxis-stop",
+            "timeout": 10
+          },
           {
             "type": "command",
             "command": "tkr hook memory-health",
