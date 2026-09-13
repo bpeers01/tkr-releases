@@ -9,6 +9,19 @@ It works on four fronts at once: compresses bloated tool output before Claude re
 
 Built for Claude Code on **Pro, Max, or Team**. API users get the same wins paid in dollars instead of cap headroom (`tkr gain --economics`). Binaries ship every release for macOS, Linux, and Windows; automated release-validation smoke testing currently covers Linux and Windows only (see Requirements). Single static binary, zero runtime dependencies.
 
+> **What's new in v5.30.0** — Delegating work to OpenCode Go models can now
+> actually change files, not just read them. You turn it on explicitly in your
+> config, and tkr can run a check command of your choosing afterwards — a
+> delegated job counts as successful only if that check passes. Go workers also
+> get compiler feedback in the same turn, so a mistake is caught immediately
+> instead of coming back to you. The available models were re-verified against
+> the provider's own catalog: two are offered, and two that looked available
+> were removed because they cannot actually answer. Failures are reported more
+> honestly too — a permanent provider error is no longer retried as if it were
+> a temporary blip. Separately, tkr's own commands no longer strip the comments
+> and ordering out of your `config.toml` when they edit it.
+> [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
+>
 > **What's new in v5.29.0** — Claude's delegated-work helper gets its
 > own editing and search tools instead of shelling out through the
 > terminal: it can now batch several file edits into one safe call, and
@@ -846,7 +859,7 @@ When installed as a plugin, tkr registers 9 core on-demand skills invocable with
 ## Verify Installation
 
 ```bash
-tkr --version             # expected: tkr v5.29.0 (or newer)
+tkr --version             # expected: tkr v5.30.0 (or newer)
 tkr doctor                # health check — PASS/WARN/FAIL rows; exit 0 or 2
 tkr verify                # run built-in filter tests (342 should pass)
 ```
