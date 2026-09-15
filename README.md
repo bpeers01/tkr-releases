@@ -9,6 +9,24 @@ It works on four fronts at once: compresses bloated tool output before Claude re
 
 Built for Claude Code on **Pro, Max, or Team**. API users get the same wins paid in dollars instead of cap headroom (`tkr gain --economics`). Binaries ship every release for macOS, Linux, and Windows; automated release-validation smoke testing currently covers Linux and Windows only (see Requirements). Single static binary, zero runtime dependencies.
 
+> **What's new in v5.31.0** — You can now see where your tokens actually go.
+> The Workbench has a new **TKR Analytics** page: what each session cost, which
+> sessions are driving your burn, where tkr saved you money and by which route,
+> and a live timeline of burn as it happens. Every figure that cannot be backed
+> by real evidence says so — you'll see "not computable" and the reason instead
+> of a misleading `$0.00`, and any total that had to leave something out is
+> labelled a floor rather than presented as complete. Each panel carries a short
+> explainer on how its number is measured and where it stops being trustworthy.
+> Also new: `tkr code <task>` hands a coding task to a cheaper model while you
+> stay the approver — you pick read-only or write up front, watch the proposed
+> tool calls and a running cost line as it works, and every session is saved so
+> you can review it later with `tkr code list`. And tkr now warns you before a
+> model switch that would rebuild a large prompt cache, so an expensive switch
+> is a decision rather than a surprise. Smaller things: you can rename and
+> delete pinned projects in the Workbench project rail, and running several
+> Claude sessions on one machine no longer leaves some of their stats blank.
+> [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
+>
 > **What's new in v5.30.0** — Delegating work to OpenCode Go models can now
 > actually change files, not just read them. You turn it on explicitly in your
 > config, and tkr can run a check command of your choosing afterwards — a
@@ -676,6 +694,28 @@ tkr setup opencode-go --disable  # turn it off and remove the stored key
 ```
 
 The API key is written to your OS's native protected credential store (Windows Credential Manager, macOS Keychain, or Linux Secret Service) — never a plaintext config file — and read back only after you explicitly authorize it. Setup also confirms "Use balance" is off in the OpenCode console before writing anything, so a delegated call can't land against a shared balance by mistake. `tkr doctor` reports readiness alongside every other integration.
+
+---
+
+### Driven Coding Sessions (`tkr code`)
+
+Hand a coding task to a cheaper model while you stay the approver. You choose
+the scope up front — one of `--read-only` or `--write` is required, there is no
+default — and watch the work happen: assistant messages, each proposed tool
+call, and a running line of tokens and cost per turn.
+
+```bash
+tkr code "fix the flaky test in the parser" --read-only
+tkr code "add a --json flag to the status command" --write
+tkr code "..." --write --spend-ceiling 2.50   # won't start if spend can't be tracked
+tkr code list                                  # review prior sessions
+```
+
+Every session is archived, so `tkr code list` can show you what each run did,
+how long it took, and what it cost. `--spend-ceiling` refuses to start against
+a provider that cannot report actual spend, rather than pretending to enforce a
+cap it has no way to measure. Set `TKR_CODE_AUTO_APPROVE=0` if you want to
+approve every single file write by hand.
 
 ---
 
