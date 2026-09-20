@@ -15,7 +15,7 @@
     that start with "workbench-v".
 
     Install layout: $env:LOCALAPPDATA\Programs\tkr-workbench\tkr-workbench.exe
-    plus a conpty\ subdirectory beside it. internal/workbench/pty looks for
+    plus praxis\ and conpty\ subdirectories beside it. internal/workbench/pty looks for
     exactly <exe dir>\conpty and silently falls back to the host's inbox
     ConPTY without it, so conpty\ MUST end up beside the exe - this
     installer extracts the release zip as a directory-level swap so both
@@ -83,6 +83,9 @@ param(
     [string]$Version = $env:TKR_WORKBENCH_VERSION,
     [string]$InstallDir = $env:TKR_WORKBENCH_INSTALL_DIR,
     [switch]$Uninstall,
+    [string]$ArtifactFile,
+    [string]$ChecksumFile,
+    [switch]$SkipRegistration,
     [switch]$Force = ($env:TKR_WORKBENCH_FORCE -eq "1")
 )
 
@@ -111,13 +114,21 @@ if (-not $DataDir -and $env:LOCALAPPDATA) {
 if ($DataDir) {
     $ResolvedInstall = [System.IO.Path]::GetFullPath($InstallDir).TrimEnd('\')
     $ResolvedData = [System.IO.Path]::GetFullPath($DataDir).TrimEnd('\')
-    if ($ResolvedInstall -ieq $ResolvedData) {
+    if ($ResolvedInstall -ieq $ResolvedData -or $ResolvedData.StartsWith($ResolvedInstall + '\', [StringComparison]::OrdinalIgnoreCase) -or $ResolvedInstall.StartsWith($ResolvedData + '\', [StringComparison]::OrdinalIgnoreCase)) {
         Write-Error ("InstallDir must not be the workbench runtime data directory ($ResolvedData). " +
             "Installing there would delete your sessions, projects and scrollback. Choose another directory.")
         exit 1
     }
 }
 
+$InstallDir = [IO.Path]::GetFullPath($InstallDir).TrimEnd('\')
+if ($InstallDir -ieq ([IO.Path]::GetPathRoot($InstallDir).TrimEnd('\'))) { throw 'InstallDir must not be a drive root' }
+if (Test-Path -LiteralPath $InstallDir) {
+    if ((Get-Item -LiteralPath $InstallDir).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'InstallDir must not be a junction or symbolic link' }
+    if (-not (Test-Path -LiteralPath (Join-Path $InstallDir '.installed-version')) -and @(Get-ChildItem -LiteralPath $InstallDir -Force).Count -gt 0) {
+        throw 'Refusing to replace an existing directory without a Workbench installation marker. Choose an empty application directory.'
+    }
+}
 $ExePath = Join-Path $InstallDir "tkr-workbench.exe"
 $ShortcutPath = Join-Path ([System.Environment]::GetFolderPath("StartMenu")) "Programs\tkr-workbench.lnk"
 
@@ -284,14 +295,52 @@ function Get-Sha256Hex {
     return (-join ($bytes | ForEach-Object { $_.ToString("x2") }))
 }
 
+# Managed watchdog control is bounded and hidden; never touches legacy tasks.
+function Invoke-ManagedWatchdogControl {
+    param([string]$Directory, [string]$Action)
+    $ControlExe = Join-Path $Directory 'tkr-workbench.exe'
+    if (-not (Test-Path -LiteralPath (Join-Path $Directory 'praxis/manifest.json'))) { return }
+    $Control = Start-Process -FilePath $ControlExe -ArgumentList $Action -WindowStyle Hidden -PassThru
+    if (-not $Control.WaitForExit(30000)) { throw 'Watchdog control timed out; installation is unchanged. Inspect Workbench Health.' }
+    if ($Control.ExitCode -ne 0) { throw 'Watchdog control failed; inspect Workbench Health before retrying.' }
+}
+
+# Both directories must share a parent: replacement is a same-volume rename.
+# The injectable rename operation is used only by disposable rollback tests.
+function Install-StagedWorkbench {
+    param([string]$StageDirectory, [string]$InstallDirectory,
+          [scriptblock]$Rename = { param($From, $Leaf) Rename-Item -LiteralPath $From -NewName $Leaf -ErrorAction Stop })
+    $StageDirectory = [IO.Path]::GetFullPath($StageDirectory)
+    $InstallDirectory = [IO.Path]::GetFullPath($InstallDirectory).TrimEnd('\')
+    $Parent = Split-Path -Parent $InstallDirectory
+    if ((Split-Path -Parent $StageDirectory) -ine $Parent -or $StageDirectory -ieq $InstallDirectory) { throw 'Stage and install must be distinct sibling directories' }
+    $OldDirectory = $InstallDirectory + '.old-' + [guid]::NewGuid()
+    $HadPrevious = Test-Path -LiteralPath $InstallDirectory
+    if ($HadPrevious) { & $Rename $InstallDirectory (Split-Path -Leaf $OldDirectory) }
+    try { & $Rename $StageDirectory (Split-Path -Leaf $InstallDirectory) }
+    catch {
+        $InstallError = $_
+        if ($HadPrevious) {
+            try { & $Rename $OldDirectory (Split-Path -Leaf $InstallDirectory) }
+            catch { throw "Install failed and rollback rename failed. Previous complete payload remains at $OldDirectory. Details: $_" }
+        }
+        throw $InstallError
+    }
+    if ($HadPrevious) {
+        if ((Split-Path -Parent ([IO.Path]::GetFullPath($OldDirectory))) -ine $Parent) { throw 'Invalid old payload cleanup path' }
+        Remove-Item -LiteralPath $OldDirectory -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # --- Uninstall path -----------------------------------------------------
 
 if ($Uninstall) {
     Write-Host "Uninstalling tkr-workbench..."
+    Invoke-ManagedWatchdogControl -Directory $InstallDir -Action '--praxis-uninstall'
 
     if (Test-Path $InstallDir) {
         try {
-            Remove-Item -Path $InstallDir -Recurse -Force -ErrorAction Stop
+            Remove-Item -LiteralPath $InstallDir -Recurse -Force -ErrorAction Stop
             Write-Host "  Removed $InstallDir"
         } catch {
             Write-Error "Could not remove $InstallDir - close tkr-workbench and retry.`nDetails: $_"
@@ -301,12 +350,12 @@ if ($Uninstall) {
         Write-Host "  $InstallDir not found (already removed)."
     }
 
-    if (Test-Path $ShortcutPath) {
+    if (-not $SkipRegistration -and (Test-Path $ShortcutPath)) {
         Remove-Item -Path $ShortcutPath -Force -ErrorAction SilentlyContinue
         Write-Host "  Removed Start Menu shortcut"
     }
 
-    if (Test-Path $UninstallKey) {
+    if (-not $SkipRegistration -and (Test-Path $UninstallKey)) {
         Remove-Item -Path $UninstallKey -Recurse -Force -ErrorAction SilentlyContinue
         Write-Host "  Removed Add/Remove Programs entry"
     }
@@ -336,6 +385,7 @@ $ArchLabel = "x64"
 # CLI's "v*" releases. A workbench install must resolve only within the
 # "workbench-v*" tag namespace.
 
+if ($ArtifactFile -and (-not $Version -or -not $ChecksumFile)) { throw 'Local preview installation requires -Version and -ChecksumFile' }
 if ($Version) {
     $Tag = $Version
     if ($Tag -notlike "workbench-v*") {
@@ -345,19 +395,27 @@ if ($Version) {
 } else {
     Write-Host "Fetching workbench releases..."
     $Releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases"
-    $WorkbenchReleases = @($Releases | Where-Object { $_.tag_name -like "workbench-v*" })
+    # Drafts and prereleases are excluded explicitly. /releases/latest
+    # filtered both for free; listing /releases does not, so skipping this
+    # would let an -rc build install itself as the current version.
+    $WorkbenchReleases = @($Releases | Where-Object {
+        $_.tag_name -like "workbench-v*" -and -not $_.draft -and -not $_.prerelease
+    })
     if ($WorkbenchReleases.Count -eq 0) {
-        Write-Error "No workbench-v* releases found in $Repo.`nThe workbench release pipeline may not have published anything yet."
+        Write-Error "No published workbench-v* releases found in $Repo.`nThe workbench release pipeline may not have published anything yet."
         exit 1
     }
 
     # Sort by the numeric version embedded in the tag (workbench-vX.Y.Z),
     # newest first. Falls back to created_at ordering if a tag does not
     # parse as a version, so a malformed tag cannot crash resolution.
+    # Truncates at the first non-numeric character rather than deleting
+    # every one of them, so "workbench-v0.7.0-rc1" reads as 0.7.0 and not
+    # as 0.7.01 (which would outrank the real 0.7.0).
     $Sorted = $WorkbenchReleases | Sort-Object -Property @{
         Expression = {
             $v = $_.tag_name -replace '^workbench-v', ''
-            try { [version]($v -replace '[^0-9.]', '') } catch { [version]"0.0.0" }
+            try { [version]($v -replace '[^0-9.].*$', '') } catch { [version]"0.0.0" }
         }
     }, created_at -Descending
     $Tag = $Sorted[0].tag_name
@@ -368,6 +426,7 @@ if ($Version) {
 }
 
 $VersionLabel = $Tag -replace '^workbench-v', ''
+if ($VersionLabel -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$') { throw 'Invalid Workbench version' }
 $Artifact = "tkr-workbench-$VersionLabel-windows-$ArchLabel.zip"
 
 Write-Host "Installing tkr-workbench $VersionLabel (windows/$ArchLabel)..."
@@ -383,15 +442,20 @@ try {
     $ChecksumPath = Join-Path $TempDir "checksums.sha256"
 
     Write-Host "Downloading $Artifact..."
-    Invoke-WebRequest -Uri "$BaseUrl/$Artifact" -OutFile $ArtifactPath -UseBasicParsing
-    Invoke-WebRequest -Uri "$BaseUrl/checksums.sha256" -OutFile $ChecksumPath -UseBasicParsing
+    if ($ArtifactFile) {
+        Copy-Item -LiteralPath $ArtifactFile -Destination $ArtifactPath
+        Copy-Item -LiteralPath $ChecksumFile -Destination $ChecksumPath
+    } else {
+        Invoke-WebRequest -Uri "$BaseUrl/$Artifact" -OutFile $ArtifactPath -UseBasicParsing
+        Invoke-WebRequest -Uri "$BaseUrl/checksums.sha256" -OutFile $ChecksumPath -UseBasicParsing
+    }
 
-    $ExpectedLine = Get-Content $ChecksumPath | Where-Object { $_ -match [regex]::Escape($Artifact) }
-    if (-not $ExpectedLine) {
+    $ExpectedLine = @(Get-Content $ChecksumPath | Where-Object { $_ -cmatch ('^[a-f0-9]{64}  ' + [regex]::Escape($Artifact) + '$') })
+    if ($ExpectedLine.Count -ne 1) {
         Write-Error "No checksum found for $Artifact in checksums.sha256"
         exit 1
     }
-    $Expected = ($ExpectedLine -split '\s+')[0]
+    $Expected = ($ExpectedLine[0] -split '\s+')[0]
 
     $ActualHash = (Get-Sha256Hex -Path $ArtifactPath).ToLower()
     if ($ActualHash -ne $Expected) {
@@ -402,13 +466,15 @@ try {
 
     # --- Extract to a staging directory ---------------------------------
     #
-    # The zip's top-level contents are tkr-workbench.exe plus a conpty\
+    # The zip's top-level contents include tkr-workbench.exe, praxis\ and conpty\
     # directory. Extracting to a fresh staging dir first (rather than
     # straight into $InstallDir) means the swap below is a single
     # directory rename, so the exe and conpty\ always move together and
     # never end up out of sync.
 
-    $StageDir = Join-Path $TempDir "staged"
+    $InstallParent = Split-Path -Parent ([IO.Path]::GetFullPath($InstallDir))
+    New-Item -ItemType Directory -Path $InstallParent -Force | Out-Null
+    $StageDir = Join-Path $InstallParent ('.tkr-workbench-stage-' + [guid]::NewGuid())
     Expand-Archive -Path $ArtifactPath -DestinationPath $StageDir -Force
 
     $StagedExe = Join-Path $StageDir "tkr-workbench.exe"
@@ -421,6 +487,22 @@ try {
         Write-Error "Downloaded zip did not contain a conpty\ directory - unexpected zip layout"
         exit 1
     }
+
+    # Validate the whole compatible pair before touching an existing install.
+    $PraxisManifestPath = Join-Path $StageDir 'praxis/manifest.json'
+    $PraxisExe = Join-Path $StageDir 'praxis/praxis.exe'
+    if (-not (Test-Path -LiteralPath $PraxisManifestPath -PathType Leaf) -or -not (Test-Path -LiteralPath $PraxisExe -PathType Leaf)) {
+        throw 'Preview payload is missing its pinned Praxis sidecar. Existing installation was not changed.'
+    }
+    $PraxisManifest = Get-Content -LiteralPath $PraxisManifestPath -Raw | ConvertFrom-Json
+    if ($PraxisManifest.workbench_version -cne $VersionLabel -or $PraxisManifest.schema_version -ne 1 -or $PraxisManifest.repository -ne 'bpeers01/praxis' -or $PraxisManifest.revision -notmatch '^[a-f0-9]{40}$' -or $PraxisManifest.binary_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Invalid Praxis release evidence. Existing installation was not changed.'
+    }
+    if ((Get-Sha256Hex -Path $PraxisExe) -cne $PraxisManifest.binary_sha256) {
+        throw 'Praxis sidecar checksum mismatch. Existing installation was not changed.'
+    }
+
+    Invoke-ManagedWatchdogControl -Directory $StageDir -Action '--praxis-bundle-check'
 
     # --- Install (rename-before-copy) ------------------------------------
     #
@@ -437,31 +519,14 @@ try {
     $InstallParent = Split-Path -Parent $InstallDir
     New-Item -ItemType Directory -Path $InstallParent -Force | Out-Null
 
-    $OldInstallDir = "$InstallDir.old"
-    if (Test-Path $OldInstallDir) { Remove-Item $OldInstallDir -Recurse -Force -ErrorAction SilentlyContinue }
-
-    $HadPrevious = Test-Path $InstallDir
-    if ($HadPrevious) {
-        try {
-            Rename-Item -Path $InstallDir -NewName (Split-Path -Leaf $OldInstallDir) -ErrorAction Stop
-        } catch {
-            Write-Error "tkr-workbench appears to be locked (another process is using it).`nClose tkr-workbench and retry.`nDetails: $_"
-            exit 1
+    $HadPrevious = Test-Path -LiteralPath $InstallDir
+    if ($HadPrevious) { Invoke-ManagedWatchdogControl -Directory $InstallDir -Action '--praxis-upgrade-stop' }
+    try { Install-StagedWorkbench -StageDirectory $StageDir -InstallDirectory $InstallDir }
+    catch {
+        if ($HadPrevious -and (Test-Path -LiteralPath $InstallDir)) {
+            try { Invoke-ManagedWatchdogControl -Directory $InstallDir -Action '--praxis-upgrade-resume' } catch { Write-Warning 'Old payload restored; watchdog requires explicit restart.' }
         }
-    }
-
-    try {
-        Move-Item -Path $StageDir -Destination $InstallDir -ErrorAction Stop
-    } catch {
-        if ($HadPrevious -and (Test-Path $OldInstallDir)) {
-            Rename-Item -Path $OldInstallDir -NewName (Split-Path -Leaf $InstallDir) -ErrorAction SilentlyContinue
-        }
-        Write-Error "Failed to install tkr-workbench: $_"
-        exit 1
-    }
-
-    if (Test-Path $OldInstallDir) {
-        Remove-Item -Path $OldInstallDir -Recurse -Force -ErrorAction SilentlyContinue
+        throw
     }
     Write-Host "Installed tkr-workbench to $InstallDir"
 
@@ -482,6 +547,8 @@ try {
     Set-Content -Path $SidecarPath -Value $SidecarLines -Encoding ascii
     Write-Host "Version recorded: $SidecarPath"
 
+    Invoke-ManagedWatchdogControl -Directory $InstallDir -Action '--praxis-upgrade-resume'
+    if (-not $SkipRegistration) {
     # --- Start Menu shortcut ----------------------------------------------
 
     try {
@@ -506,10 +573,7 @@ try {
 
     try {
         New-Item -Path $UninstallKey -Force | Out-Null
-        $UninstallCmd = "powershell -NoProfile -Command " +
-            "`"Remove-Item -Recurse -Force '$InstallDir' -ErrorAction SilentlyContinue; " +
-            "Remove-Item -Force '$ShortcutPath' -ErrorAction SilentlyContinue; " +
-            "Remove-Item -Path '$UninstallKey' -Recurse -Force -ErrorAction SilentlyContinue`""
+        $UninstallCmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$InstallDir\install-workbench.ps1`" -Uninstall -InstallDir `"$InstallDir`""
         New-ItemProperty -Path $UninstallKey -Name "DisplayName" -Value "tkr-workbench" -Force | Out-Null
         New-ItemProperty -Path $UninstallKey -Name "DisplayVersion" -Value $VersionLabel -Force | Out-Null
         New-ItemProperty -Path $UninstallKey -Name "Publisher" -Value "bpeers01" -Force | Out-Null
@@ -523,6 +587,7 @@ try {
         Write-Warning "Could not register Add/Remove Programs entry: $_"
     }
 
+    } # registration
     # --- SmartScreen note ---------------------------------------------------
 
     Write-Host ""
@@ -541,7 +606,12 @@ try {
     Write-Host "Uninstall anytime with: .\install-workbench.ps1 -Uninstall"
 
 } finally {
+    if ($StageDir -and (Test-Path -LiteralPath $StageDir)) {
+        if ((Split-Path -Parent ([IO.Path]::GetFullPath($StageDir))) -ine $InstallParent) { throw 'Invalid stage cleanup path' }
+        Remove-Item -LiteralPath $StageDir -Recurse -Force
+    }
     if (Test-Path $TempDir) {
-        Remove-Item -Path $TempDir -Recurse -Force -ErrorAction SilentlyContinue
+        if (-not ([IO.Path]::GetFullPath($TempDir)).StartsWith(([IO.Path]::GetFullPath($env:TEMP).TrimEnd('\') + '\'), [StringComparison]::OrdinalIgnoreCase)) { throw 'Invalid temporary cleanup path' }
+        Remove-Item -LiteralPath $TempDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
