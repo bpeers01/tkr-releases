@@ -9,6 +9,27 @@ It works on four fronts at once: compresses bloated tool output before Claude re
 
 Built for Claude Code on **Pro, Max, or Team**. API users get the same wins paid in dollars instead of cap headroom (`tkr gain --economics`). Binaries ship every release for macOS, Linux, and Windows; automated release-validation smoke testing currently covers Linux and Windows only (see Requirements). Single static binary, zero runtime dependencies.
 
+> **What's new in v5.32.0** — Setting up tkr's Codex hooks no longer means the
+> command line. The Workbench's Codex row now shows whether its hooks are
+> healthy, and clicking that badge opens a dialog that installs, repairs or
+> removes them — for this project or globally — always showing you the exact
+> files it would write before anything changes. After an install it walks you
+> through approving the hooks in Codex itself; tkr never approves them for you.
+> A Codex session that shows nothing on the rail now tells you why instead of
+> leaving a blank row, and `tkr doctor` stops reporting a fully approved install
+> as partly unreviewed. Cursor is now supported the same way Claude Code and
+> Codex are: `tkr cursor` launches Cursor's terminal agent, you can hand a
+> read-only task to Cursor's own agent runtime, and Cursor sessions show their
+> model, turn count and context alongside everything else. The Workbench also
+> gains a Praxis section for reviewing decisions and browsing its knowledge, and
+> API keys for OpenRouter, Cursor and OpenCode Go are now kept in your operating
+> system's password store rather than environment variables. Fixed: installing
+> or upgrading tkr could fail with a 404 when the most recent download published
+> was a Workbench build — it now always finds the right release. The packaged
+> Workbench app also no longer opens a debugging port unless you explicitly ask
+> for one.
+> [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
+>
 > **What's new in v5.31.0** — You can now see where your tokens actually go.
 > The Workbench has a new **TKR Analytics** page: what each session cost, which
 > sessions are driving your burn, where tkr saved you money and by which route,
