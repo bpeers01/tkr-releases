@@ -102,12 +102,42 @@ fi
 
 # --- Resolve version ---
 
+# Deliberately NOT /releases/latest. $REPO is a shared distribution repo
+# that also carries the Workbench's "workbench-v*" releases, and that
+# endpoint returns the newest release across EVERY tag namespace — so
+# whenever a workbench release is the most recent publish it hands back
+# e.g. "workbench-v0.7.0", and the download below 404s asking a workbench
+# release for a CLI artifact name. Resolve within the "v*" namespace
+# instead. Same rule as scripts/install-workbench.ps1, which filters on
+# "workbench-v*"; see docs/RELEASING.md.
+#
+# Parsing note: the response is split into one line per release by turning
+# "{" into newlines. GitHub emits tag_name, draft and prerelease after the
+# nested "author" object and before the nested "assets" array, so all three
+# land in the same chunk — which is what lets a draft/prerelease be
+# excluded per release without a JSON parser. /releases/latest already
+# excluded both; dropping them here keeps that contract.
+resolve_latest_cli_tag() {
+  curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=30" \
+    | tr -d ' \t\r\n' \
+    | tr '{' '\n' \
+    | grep '"tag_name":"v[0-9]' \
+    | grep -v '"draft":true' \
+    | grep -v '"prerelease":true' \
+    | sed 's/.*"tag_name":"\([^"]*\)".*/\1/' \
+    | head -n 1
+}
+
 if [ -n "${TKR_VERSION:-}" ]; then
   TAG="$TKR_VERSION"
 else
-  TAG=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | sed 's/.*: "//;s/".*//')
+  TAG=$(resolve_latest_cli_tag)
   if [ -z "$TAG" ]; then
-    echo "Error: could not determine latest release" >&2
+    echo "Error: could not determine the latest tkr CLI release" >&2
+    echo "  No published v* release was found in the 30 most recent releases of" >&2
+    echo "  ${REPO}, and the installer will not fall back to a co-hosted" >&2
+    echo "  product's release (e.g. workbench-v*) or to an unknown older version." >&2
+    echo "  Pin one explicitly:  TKR_VERSION=v5.31.0 sh install.sh" >&2
     exit 1
   fi
 fi
