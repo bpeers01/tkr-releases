@@ -1,0 +1,195 @@
+{
+  "specVersion": "0.1",
+  "hooks": [
+    {
+      "match": {"event": "PreCompact", "command": "tkr hook pre-compact"},
+      "name": "pre-compact",
+      "budgetMs": {"p50": 1500, "p95": 5000},
+      "owner": "tkr",
+      "purpose": "Snapshots session state and tracks compaction bypasses before the context is compacted",
+      "docs": "cmd/tkr/cmd_hook_precompact.go"
+    },
+    {
+      "match": {"event": "PreToolUse", "command": "tkr hook delegate-host"},
+      "name": "delegate-host",
+      "budgetMs": {"p50": 1000, "p95": 4000},
+      "owner": "tkr",
+      "purpose": "Binds a one-shot host token to delegate/delegate_resume calls so the MCP handler can attribute the host session",
+      "docs": "docs/delegate-usage.md"
+    },
+    {
+      "match": {"event": "PreToolUse", "command": "timeout 5 tkr hook rewrite"},
+      "name": "rewrite",
+      "budgetMs": {"p50": 1500, "p95": 4000},
+      "owner": "tkr",
+      "purpose": "Rewrites Bash commands to run through tkr's output filters",
+      "docs": "cmd/tkr/cmd_hook_rewrite.go"
+    },
+    {
+      "match": {"event": "PreToolUse", "command": "tkr hook agent-search-inject"},
+      "name": "agent-search-inject",
+      "budgetMs": {"p50": 750, "p95": 4000},
+      "owner": "tkr",
+      "purpose": "Injects search context and work-routing advice into Agent spawns; applies the spawn veto",
+      "docs": "docs/routing-outcomes.md"
+    },
+    {
+      "match": {"event": "PreToolUse", "command": "timeout 5 tkr hook long-runner-warn"},
+      "name": "long-runner-warn",
+      "budgetMs": {"p50": 1250, "p95": 4000},
+      "owner": "tkr",
+      "purpose": "Warns before Bash commands that match known long-running patterns",
+      "docs": "cmd/tkr/cmd_hook_longrunner.go"
+    },
+    {
+      "match": {"event": "PreToolUse", "command": "timeout 5 tkr hook cache-bust-warn"},
+      "name": "cache-bust-warn",
+      "budgetMs": {"p50": 1000, "p95": 3500},
+      "owner": "tkr",
+      "purpose": "Estimates prefix-cache rebuild cost before edits to cache-critical files",
+      "docs": ".claude/rules/cache-awareness.md"
+    },
+    {
+      "match": {"event": "PreToolUse", "command": "tkr hook skill-invoked"},
+      "name": "skill-invoked",
+      "budgetMs": {"p50": 750, "p95": 3500},
+      "owner": "tkr",
+      "purpose": "Applies the bundled-skill payload gate when a Skill is invoked",
+      "docs": "cmd/tkr/cmd_hook_skillinvoked.go"
+    },
+    {
+      "match": {"event": "PreToolUse", "command": "timeout 5 tkr hook praxis-observe"},
+      "name": "praxis-observe",
+      "budgetMs": {"p50": 1000, "p95": 4000},
+      "owner": "tkr",
+      "purpose": "Records tool activity after a Praxis consult without reading tool inputs",
+      "docs": "internal/praxis/receipt.go"
+    },
+    {
+      "match": {"event": "PreToolUse", "command": "timeout 5 tkr hook praxis-checkpoint"},
+      "name": "praxis-checkpoint",
+      "budgetMs": {"p50": 1000, "p95": 4000},
+      "owner": "tkr",
+      "purpose": "Consults the local Praxis knowledge base before an AskUserQuestion reaches the user; fail-open",
+      "docs": "docs/praxis-profile-checkpoints.md"
+    },
+    {
+      "match": {"event": "PreModelSwitch", "command": "timeout 5 tkr hook pre-model-switch"},
+      "name": "pre-model-switch",
+      "budgetMs": {"p50": 1500, "p95": 4000},
+      "owner": "tkr",
+      "purpose": "Warns with the prefix-cache rebuild cost a model switch will incur",
+      "docs": "cmd/tkr/cmd_hook_premodelswitch.go"
+    },
+    {
+      "match": {"event": "SessionStart", "command": "tkr hook session-start"},
+      "name": "session-start",
+      "budgetMs": {"p50": 1750, "p95": 5500},
+      "owner": "tkr",
+      "purpose": "Session bootstrap: awareness context, skill audit, and background refreshes",
+      "docs": "cmd/tkr/cmd_hook_sessionstart.go"
+    },
+    {
+      "match": {"event": "PostToolUse", "command": "tkr hook post-tool-call"},
+      "name": "post-tool-call",
+      "budgetMs": {"p50": 1500, "p95": 5500},
+      "owner": "tkr",
+      "purpose": "Compresses Bash output through the filter pipeline and records agent completions and nudges",
+      "docs": "hooks/CLAUDE.md"
+    },
+    {
+      "match": {"event": "PostToolUse", "command": "timeout 5 tkr hook cli-corrections"},
+      "name": "cli-corrections",
+      "budgetMs": {"p50": 1000, "p95": 4000},
+      "owner": "tkr",
+      "purpose": "Suggests known CLI corrections after a failed Bash command",
+      "docs": "cmd/tkr/cmd_hook_clicorrections.go"
+    },
+    {
+      "match": {"event": "PostToolBatch", "command": "tkr hook post-tool-batch"},
+      "name": "post-tool-batch",
+      "budgetMs": {"p50": 500, "p95": 2500},
+      "owner": "tkr",
+      "purpose": "Classifies each tool batch and appends it to the ledger",
+      "docs": "cmd/tkr/cmd_hook_posttoolbatch.go"
+    },
+    {
+      "match": {"event": "UserPromptSubmit", "command": "tkr hook user-prompt-submit"},
+      "name": "user-prompt-submit",
+      "budgetMs": {"p50": 1500, "p95": 5500},
+      "owner": "tkr",
+      "purpose": "Records the prompt event and classifies it for work routing",
+      "docs": "docs/decisions/0033-advise-and-veto-routing-surfaces.md"
+    },
+    {
+      "match": {"event": "SubagentStop", "command": "tkr hook subagent-outcome"},
+      "name": "subagent-outcome",
+      "budgetMs": {"p50": 750, "p95": 3500},
+      "owner": "tkr",
+      "purpose": "Records the outcome of a finished subagent for routing evaluation",
+      "docs": "docs/routing-outcomes.md"
+    },
+    {
+      "match": {"event": "Stop", "command": "timeout 5 tkr hook praxis-stop"},
+      "name": "praxis-stop",
+      "budgetMs": {"p50": 1500, "p95": 4000},
+      "owner": "tkr",
+      "purpose": "Praxis stop checkpoint; always exits 0, and blocks only to hand advisory guidance back to the model",
+      "docs": "docs/praxis-stop-checkpoint.md",
+      "blockDisposition": "guidance"
+    },
+    {
+      "match": {"event": "Stop", "command": "tkr hook memory-health"},
+      "name": "memory-health",
+      "owner": "tkr",
+      "purpose": "Scans memory files for health problems (async rewake)",
+      "docs": "cmd/tkr/cmd_hook_memoryhealth.go"
+    },
+    {
+      "match": {"event": "Stop", "command": "tkr hook session-summary"},
+      "name": "session-summary",
+      "owner": "tkr",
+      "purpose": "Writes the session summary at turn end (async rewake)",
+      "docs": "cmd/tkr/cmd_hook_sessionsummary.go"
+    },
+    {
+      "match": {"event": "Stop", "command": "tkr keepalive watch"},
+      "name": "keepalive-watch",
+      "owner": "tkr",
+      "purpose": "Long-lived idle watcher that wakes the session before the prompt cache expires (asyncRewake, up to 3600s by design)",
+      "docs": "cmd/tkr/cmd_keepalive.go"
+    },
+    {
+      "match": {"event": "SessionEnd", "commandContains": "hooks/keepalive/cleanup.sh"},
+      "name": "keepalive-cleanup",
+      "budgetMs": {"p50": 1500, "p95": 5000},
+      "owner": "tkr",
+      "purpose": "Removes this session's keepalive state; best-effort",
+      "docs": "hooks/keepalive/cleanup.sh"
+    },
+    {
+      "match": {"event": "SessionEnd", "command": "tkr hook team-push"},
+      "name": "team-push",
+      "budgetMs": {"p50": 1500, "p95": 5000},
+      "owner": "tkr",
+      "purpose": "Debounced aggregate-only team collection push; opt-in via managed [team] config",
+      "docs": "docs/reports/team-reports.md"
+    },
+    {
+      "match": {"event": "SessionEnd", "command": "tkr hook session-summary"},
+      "name": "session-summary",
+      "budgetMs": {"p50": 1500, "p95": 5000},
+      "owner": "tkr",
+      "purpose": "Writes the final session summary at session end",
+      "docs": "cmd/tkr/cmd_hook_sessionsummary.go"
+    },
+    {
+      "match": {"event": "InstructionsLoaded", "command": "tkr hook instructions-loaded"},
+      "name": "instructions-loaded",
+      "budgetMs": {"p50": 1500, "p95": 5000},
+      "owner": "tkr",
+      "purpose": "Telemetry only: logs each CLAUDE.md / rules load for pd-audit",
+      "docs": "internal/hooks/instructions_loaded.go"
+    }
+  ]
+}
