@@ -1,7 +1,19 @@
 #Requires -Version 5.1
+#
+# KEEP THIS FILE PURE ASCII - em-dashes especially, which this repo's prose
+# uses everywhere. Windows PowerShell 5.1 (stock powershell.exe, and the
+# version this file requires) reads a BOM-less .ps1 as ANSI/CP1252, so a
+# UTF-8 em-dash arrives as three bytes whose last one (0x94) is a right
+# double-quote. That opens an unterminated string and the parse cascades
+# into ~14 bogus errors hundreds of lines away, so `.\install.ps1` - a
+# documented path, see docs/DISTRIBUTION.md - fails to run at all. PS 7
+# decodes the same file as UTF-8 and parses it clean, which is why this is
+# invisible in local testing and why `irm | iex` (the primary documented
+# path) is unaffected: Invoke-RestMethod decodes the HTTP body before the
+# parser ever sees it. scripts/install-workbench.ps1 is pure ASCII too.
 <#
 .SYNOPSIS
-    tkr installer for Windows — downloads the latest release binary from GitHub.
+    tkr installer for Windows - downloads the latest release binary from GitHub.
 
 .DESCRIPTION
     Supports three modes (PUBLIC-009 core/advanced split):
@@ -87,13 +99,41 @@ if ($Arch -ne [System.Runtime.InteropServices.Architecture]::X64) {
 $Artifact = "tkr-windows-amd64.exe"
 
 # --- Resolve version ---
+#
+# Deliberately NOT /releases/latest: $Repo is a shared distribution repo
+# that also carries the Workbench's "workbench-v*" releases, and that
+# endpoint returns the newest release across EVERY tag namespace. Whenever
+# a workbench release is the most recent publish it hands back e.g.
+# "workbench-v0.7.0", and the download below 404s asking a workbench
+# release for a CLI artifact name. Resolve within the "v*" namespace
+# instead, excluding drafts and prereleases the way /releases/latest did.
+# Same rule as scripts/install-workbench.ps1; see docs/RELEASING.md.
 
 if (-not $Version) {
-    Write-Host "Fetching latest release..."
-    $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest"
-    $Tag = $Release.tag_name
+    Write-Host "Fetching tkr CLI releases..."
+    $Releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases?per_page=30"
+    $CliReleases = @($Releases | Where-Object {
+        $_.tag_name -match '^v[0-9]' -and -not $_.draft -and -not $_.prerelease
+    })
+    if ($CliReleases.Count -eq 0) {
+        Write-Error "Could not determine the latest tkr CLI release.`nNo published v* release was found in the 30 most recent releases of $Repo, and the installer will not fall back to a co-hosted product's release (e.g. workbench-v*) or to an unknown older version.`nPin one explicitly:  -Version v5.31.0"
+        exit 1
+    }
+
+    # Sort by the numeric version embedded in the tag, newest first, so a
+    # re-published or backfilled old release cannot win on created_at
+    # alone. Truncates at the first non-numeric character rather than
+    # deleting every one of them, so "v5.31.0-rc1" reads as 5.31.0 and not
+    # as 5.31.01.
+    $Sorted = $CliReleases | Sort-Object -Property @{
+        Expression = {
+            $v = $_.tag_name -replace '^v', '' -replace '[^0-9.].*$', ''
+            try { [version]$v } catch { [version]"0.0.0" }
+        }
+    }, created_at -Descending
+    $Tag = $Sorted[0].tag_name
     if (-not $Tag) {
-        Write-Error "Could not determine latest release"
+        Write-Error "Could not determine the newest v* release"
         exit 1
     }
 } else {
@@ -199,7 +239,7 @@ try {
     # `tkr mcp` exposes the `delegate` tool over stdio. Registering here means
     # a fresh install can immediately call delegate(...) from a Claude Code
     # session. Idempotent: remove-then-add. Never fails the install on MCP
-    # wiring errors — the binary is the load-bearing artifact, MCP is opt-in.
+    # wiring errors - the binary is the load-bearing artifact, MCP is opt-in.
 
     if (Get-Command claude -ErrorAction SilentlyContinue) {
         Write-Host ""
@@ -257,7 +297,7 @@ try {
         $PluginDir = $ScriptSource
         if ($Tier -eq "advanced") {
             # Enable advanced skills by copying them into the registered
-            # skills/ dir (Claude Code only loads skills/ — PUBLIC-008).
+            # skills/ dir (Claude Code only loads skills/ - PUBLIC-008).
             # Adds untracked copies to the clone; git clean -fd skills/ reverts.
             $AdvSkills = Join-Path $PluginDir "skills-advanced"
             if (Test-Path $AdvSkills) {
@@ -281,7 +321,7 @@ try {
         }
     } else {
         # Download the tier's plugin bundle from the release. Core:
-        # tkr-plugin.tar.gz (.claude-plugin + hooks + core skills only —
+        # tkr-plugin.tar.gz (.claude-plugin + hooks + core skills only -
         # scripts\delegate.sh and adapters\ excluded per ADR-0023).
         # Advanced: tkr-plugin-advanced.tar.gz (everything, advanced
         # skills pre-merged into skills\).
@@ -299,7 +339,7 @@ try {
             exit 1
         }
 
-        # Verify plugin bundle checksum. Hard-fail on a missing entry — mirror
+        # Verify plugin bundle checksum. Hard-fail on a missing entry - mirror
         # the binary path so an unverified bundle (session-executing hooks and
         # scripts) is never extracted (REV-S3).
         $BundleExpectedLine = Get-Content $ChecksumPath | Where-Object { $_ -match [regex]::Escape($BundleFile) }
@@ -316,7 +356,7 @@ try {
         Write-Host "Plugin bundle checksum verified."
 
         # Extract to plugin dir. Remove bundle-owned payload dirs first so
-        # a reinstall or tier switch (advanced -> core) is authoritative —
+        # a reinstall or tier switch (advanced -> core) is authoritative -
         # stale advanced skills/scripts/adapters must not survive.
         New-Item -ItemType Directory -Path $PluginDir -Force | Out-Null
         foreach ($d in @(".claude-plugin", "agents", "hooks", "skills", "skills-advanced", "scripts", "adapters")) {
@@ -349,13 +389,13 @@ try {
                 $LegacyPath = Join-Path $ClaudeHooksDir $LegacyFile
                 if (Test-Path $LegacyPath) {
                     # Ownership check: these names are generic and the hooks dir is
-                    # shared — only delete files that carry a tkr marker; a
+                    # shared - only delete files that carry a tkr marker; a
                     # same-named file without one is user-owned, leave it.
                     if (Select-String -Path $LegacyPath -Pattern "tkr" -Quiet) {
                         Remove-Item $LegacyPath -Force
                         Write-Host "  Removed legacy hook file: $LegacyFile"
                     } else {
-                        Write-Host "  Skipped $LegacyPath — no tkr marker; looks user-owned, leaving in place."
+                        Write-Host "  Skipped $LegacyPath - no tkr marker; looks user-owned, leaving in place."
                     }
                 }
             }
@@ -390,26 +430,26 @@ try {
                     }
 
                     # Replace old Shadowlane statusLine with the plugin's own statusline,
-                    # or add it if absent — so the badge activates automatically on plugin install.
+                    # or add it if absent - so the badge activates automatically on plugin install.
                     # Prefer the fork-free native verb when the installed binary supports it
                     # (INV-085); fall back to the bash script for a binary that predates it.
                     $PluginStatusLineCmd = "bash $($PluginDir -replace '\\', '/')/hooks/statusline.sh"
                     # Values this installer may overwrite. Never widen this to match a
-                    # statusLine the user chose themselves — leave unrecognized values alone.
+                    # statusLine the user chose themselves - leave unrecognized values alone.
                     $LegacyStatusLineRe = "shadowlane"
                     try {
                         & $Dest statusline render --help *> $null
                         if ($LASTEXITCODE -eq 0) {
                             $PluginStatusLineCmd = "`"$Dest`" statusline render"
-                            # INST-007: see install.sh — an existing install already points at
+                            # INST-007: see install.sh - an existing install already points at
                             # tkr's own forking bash renderer, matching neither clause, so it
                             # never upgraded. Adopt it only when the binary serves the verb.
                             $LegacyStatusLineRe = "shadowlane|hooks[/\\]statusline\.(sh|ps1)"
                         }
                     } catch {
-                        # $Dest predates the verb or invocation failed — keep the bash fallback.
+                        # $Dest predates the verb or invocation failed - keep the bash fallback.
                     }
-                    # INST-004 parity: .statusLine may be an object, not a string — match on
+                    # INST-004 parity: .statusLine may be an object, not a string - match on
                     # the .command field in that case rather than the stringified object.
                     $CurrentSLRaw = if ($Settings.PSObject.Properties.Name -contains "statusLine") { $Settings.statusLine } else { "" }
                     $CurrentSL = if ($CurrentSLRaw -is [string]) {
@@ -430,7 +470,7 @@ try {
                         Write-Host "Legacy settings cleanup complete."
                     }
                 } catch {
-                    Write-Host "  Note: could not parse settings.json — skipping legacy settings cleanup." -ForegroundColor Yellow
+                    Write-Host "  Note: could not parse settings.json - skipping legacy settings cleanup." -ForegroundColor Yellow
                 }
             }
         } catch {
