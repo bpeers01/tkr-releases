@@ -9,6 +9,16 @@ It works on four fronts at once: compresses bloated tool output before Claude re
 
 Built for Claude Code on **Pro, Max, or Team**. API users get the same wins paid in dollars instead of cap headroom (`tkr gain --economics`). Binaries ship every release for macOS, Linux, and Windows; automated release-validation smoke testing currently covers Linux and Windows only (see Requirements). Single static binary, zero runtime dependencies.
 
+> **What's new in v5.33.0** — If you use the TKR Workbench with Praxis, its
+> decision checkpoints work again. On machines that also had an older
+> standalone `praxis` installed, every checkpoint quietly failed and Claude
+> never saw the guidance; tkr now uses the engine the Workbench installs. A
+> second question asked in the same turn is also no longer mistaken for a
+> repeat of the first just because the two share a word. New on Windows:
+> `tkr gate watch --repo owner/name` hands a commit you just pushed to the
+> Workbench's release-gate watcher so you can approve the gate from there.
+> [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
+>
 > **What's new in v5.32.0** — Setting up tkr's Codex hooks no longer means the
 > command line. The Workbench's Codex row now shows whether its hooks are
 > healthy, and clicking that badge opens a dialog that installs, repairs or
