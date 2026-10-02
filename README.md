@@ -9,6 +9,17 @@ It works on four fronts at once: compresses bloated tool output before Claude re
 
 Built for Claude Code on **Pro, Max, or Team**. API users get the same wins paid in dollars instead of cap headroom (`tkr gain --economics`). Binaries ship every release for macOS, Linux, and Windows; automated release-validation smoke testing currently covers Linux and Windows only (see Requirements). Single static binary, zero runtime dependencies.
 
+> **What's new in v5.34.0** — `tkr ls` now does what its flags say: `-a`, `-l`,
+> `-t`, `-S`, `-r` and friends work, hidden files stay hidden unless you ask for
+> them, and any flag tkr does not handle goes straight to your system `ls`
+> unchanged. Dollar figures now say what kind of number they are — session cost
+> reads as an "API-rate equivalent" rather than a total — and team reports
+> headline only the savings tkr can verify. `tkr doctor` now reports team
+> enrollment health. For the TKR Workbench's opt-in supervision mode, new
+> `tkr sup` and `tkr sup-owner` commands let supervised sessions assign, report
+> on, verify and accept work.
+> [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
+>
 > **What's new in v5.33.0** — If you use the TKR Workbench with Praxis, its
 > decision checkpoints work again. On machines that also had an older
 > standalone `praxis` installed, every checkpoint quietly failed and Claude
