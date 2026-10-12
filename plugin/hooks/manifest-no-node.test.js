@@ -61,3 +61,27 @@ test("plugin.json manifest: no command string invokes node (#664 Stage 4b)", () 
       `mode ADR-0041 closed: ${offenders.join("; ")}`,
   );
 });
+
+// The first word of a command is resolved on the user's PATH by the harness's
+// shell, so it is a runtime dependency exactly as node was. `timeout` is GNU
+// coreutils: absent on stock macOS, and on Windows the name is shared with
+// System32's unrelated pause command. A `timeout 5 tkr hook ...` entry exits
+// 127 there before tkr is ever invoked, and the harness treats that as a
+// non-blocking error, so the hook is silently off (#1237).
+const ALLOWED_COMMAND_HEADS = new Set(["tkr", "bash"]);
+
+test("plugin.json manifest: every command starts with tkr or bash (#1237)", () => {
+  const plugin = JSON.parse(fs.readFileSync(pluginJsonPath, "utf8"));
+  const commands = collectCommandStrings(plugin);
+
+  const offenders = commands.filter(
+    (cmd) => !ALLOWED_COMMAND_HEADS.has(cmd.trim().split(/\s+/)[0]),
+  );
+
+  assert.deepStrictEqual(
+    offenders,
+    [],
+    `plugin.json command(s) depend on a binary tkr does not ship and the ` +
+      `host may not have: ${offenders.join("; ")}`,
+  );
+});

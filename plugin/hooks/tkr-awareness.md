@@ -17,12 +17,13 @@ For high-value commands (git, ls, cat, grep, test runners), tkr has dedicated Go
 - `tkr git status` — Grouped porcelain output (staged/modified/untracked)
 - `tkr git log` — Compact log with truncated headers
 - `tkr git diff` — Compact diff with hunk truncation
+- `tkr git` proxies git built-ins only: global `-c`/`-C`/`--git-dir`, aliases, `config` writes and program-running forms (`rebase -x`, `bisect run`, `submodule foreach`, `--upload-pack`, `--ext-diff`, …) are refused — run those natively with `git`
 - `tkr ls` — Extension-grouped listing with size summary
 - `tkr read <file>` — Line-numbered output with windowing
 - `tkr read <file> --lines N-M` — Show only lines N through M (1-based inclusive); combines with `--level`
 - `tkr grep <pattern>` — Matches grouped by file
 - `tkr find [args]` — Results grouped by directory
-- `tkr test <command>` — Error-focused test output
+- `tkr test <runner> [args]` — Error-focused test output. Runs only known test runners (`go test`, `cargo test`, `npm test`, `pytest`, `python -m pytest`, `uv run pytest`, `npx vitest|jest|mocha|ava|playwright test`); any other command is refused — run it natively. `tkr vitest` takes only `vitest run`, `tkr node-test` only `node --test` without `-e`/`-p`/`-r`/`--import`-style flags
 - `tkr gh pr|issue|run|api` — Compact GitHub CLI output; `gh api` JSON responses summarized and `gh run view --log` extracts errors from the middle of truncated logs
 - `tkr docker ps|images` — Compact container and image listings
 - `tkr curl <url>` — JSON responses summarized (null fields stripped, arrays capped at 20); non-JSON passes through
@@ -36,7 +37,7 @@ For high-value commands (git, ls, cat, grep, test runners), tkr has dedicated Go
 - `tkr memory audit [--fix|--stale N]` — Classify ~/.claude memory files DEAD/OVERSIZED/STALE/GOOD; `--fix` deletes dead + updates index. Staleness is per-provenance (frontmatter `provenance:` — user-corrected 180d / user-stated 120d / observed 45d / inferred 7d; absent or unrecognized = 21d); `--stale N` forces one flat threshold for every entry
 - `tkr candidates` — Rank tracked commands by token waste to identify filter priorities
 - `tkr learn <command>` — Capture CLI corrections for future sessions
-- `tkr trust [--update|--revoke|--list]` — Manage project filter trust (required before `.tkr/filters.toml` loads)
+- `tkr trust [--update|--revoke|--list]` — Manage project filter trust (required before `.tkr/filters.toml` loads). Granting trust is refused from an agent session — ask the user to review the file and run `tkr trust` in their own terminal; `--list`/`--revoke` work anywhere
 - `tkr verify` — Run inline TOML filter tests
 - `tkr <any command>` — TOML filter lookup, passthrough if no match
 
