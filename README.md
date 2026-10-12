@@ -9,6 +9,23 @@ It works on four fronts at once: compresses bloated tool output before Claude re
 
 Built for Claude Code on **Pro, Max, or Team**. API users get the same wins paid in dollars instead of cap headroom (`tkr gain --economics`). Binaries ship every release for macOS, Linux, and Windows; automated release-validation smoke testing currently covers Linux and Windows only (see Requirements). Single static binary, zero runtime dependencies.
 
+> **What's new in v5.35.1** — Safer command rewriting. tkr's Claude Code hook
+> now checks the command your shell will actually run, so a backgrounded `&`
+> command, a preceding `cd`, or a leading `NAME=value` assignment can no longer
+> slip past one of your allow rules. The Gemini CLI hook no longer rewrites
+> commands unless you opt in with `tkr config set hooks.gemini_rewrite true`.
+> New: `tkr code --verify` runs a check you choose after each change, and an
+> experimental opt-in `run_program` tool lets a worker batch several
+> search-and-read steps into one round trip. TKR Workbench v0.11.1 adds
+> supervised Chief-of-Staff workstreams with an owner panel; it is opt-in (set
+> the user environment variable `TKR_WB_SUPERVISION=1`, then restart
+> Workbench). Orchestration is live-pilot validated on Claude Code 2.1.296 with
+> Sonnet, but it does not replace human review of the code it produces, and
+> Codex supervision is unverified and not supported. The Workbench binaries are
+> unsigned, so Windows SmartScreen may warn on first run. See "Known
+> limitations" in the Workbench release notes.
+> [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
+>
 > **What's new in v5.34.0** — `tkr ls` now does what its flags say: `-a`, `-l`,
 > `-t`, `-S`, `-r` and friends work, hidden files stay hidden unless you ask for
 > them, and any flag tkr does not handle goes straight to your system `ls`
