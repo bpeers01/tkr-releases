@@ -351,7 +351,7 @@ install_hooks_manually() {
   echo ""
   echo "To complete manual setup, add these hooks to ${settings_file}:"
   echo '  "hooks": {'
-  echo '    "PreToolUse": [{ "type": "command", "command": "timeout 5 tkr hook rewrite", "timeout": 10 }],'
+  echo '    "PreToolUse": [{ "type": "command", "command": "tkr hook rewrite", "timeout": 10 }],'
   echo '    "SessionStart": [{ "type": "command", "command": "tkr hook session-start" }],'
   echo '    "UserPromptSubmit": [{ "type": "command", "command": "node '"${claude_hooks_dir}"'/user-prompt-submit.js" }]'
   echo '  }'
@@ -386,14 +386,14 @@ cleanup_legacy_hooks() {
   # 2 & 3. Patch settings.json (requires jq)
   if [ ! -f "$settings_file" ]; then
     [ "$cleaned" = "true" ] && echo "Legacy hook cleanup complete."
-    return
+    return 0
   fi
 
   if ! command -v jq >/dev/null 2>&1; then
     echo "  Note: jq not installed — skipping settings.json cleanup."
     echo "    Remove tkr-rewrite entries from ${settings_file} manually if needed."
     [ "$cleaned" = "true" ] && echo "Legacy hook cleanup complete."
-    return
+    return 0
   fi
 
   # 2 & 3. Strip tkr-rewrite PreToolUse hooks + set the plugin statusLine.
@@ -461,7 +461,11 @@ cleanup_legacy_hooks() {
     fi
   fi
 
-  [ "$cleaned" = "true" ] && echo "Legacy hook cleanup complete."
+  # An `&&` list as the last command returns 1 when nothing was cleaned, and
+  # under `set -e` that aborts the installer at the call site.
+  if [ "$cleaned" = "true" ]; then
+    echo "Legacy hook cleanup complete."
+  fi
 }
 
 echo ""
