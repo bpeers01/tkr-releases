@@ -48,6 +48,47 @@ not `node <script>` (`tkr keepalive watch`, the SessionEnd
 not tkr's. `TKR_HOOKS_DISABLED=1` turns the row into a WARN rather than
 a false PASS — the hooks are off, so nothing was proven about them.
 
+"Tkr's" is decided by **where the script lives**, never by its name or
+contents (#1251). A hook registered in settings is executed only when
+its resolved path is inside a tree tkr owns: the plugin root Claude
+Code serves for tkr, `$CLAUDE_PLUGIN_ROOT` when it is outside the
+current project, or the install tree beside the `tkr` binary — each
+carrying tkr's `.claude-plugin/plugin.json`. A project hook that merely
+*looks* like tkr's (a `tkr-` file name, or a `tkr-hook-version:` marker
+line, both of which any repository can copy) is never run; the row
+turns WARN and names it as `not executed: not a tkr-owned script`.
+That is either a stale project-scoped copy from an old `tkr init`
+(re-run `tkr init` to switch to the native `tkr hook` verbs) or a
+repository impersonating tkr — so running `tkr doctor` inside an
+untrusted clone does not execute that clone's code.
+
+### "tkr permission rules: N broad Bash(tkr …) allow rule(s)"
+
+Older tkr permission dialogs showed the *rewritten* tkr form of a
+command, so answering "don't ask again" saved a rule on the tkr prefix
+— `Bash(tkr:*)`, `Bash(tkr git:*)`, `Bash(tkr python3 *)`, and so on.
+A rule on the tkr prefix authorizes whatever tkr runs for that verb,
+which can be far more than the command you meant to approve. Doctor
+reads the same settings files Claude Code does (user and project
+`settings.json` / `settings.local.json`) and lists each such allow rule
+below the table with its file, what it can authorize, and a native
+replacement where one is defensible:
+
+| Rule shape | Can authorize | Safer native rule |
+|---|---|---|
+| `tkr:*`, `tkr *`, `tkr proxy:*`, `tkr claude:*`, unknown verb on an interpreter (`tkr python3 *`, `tkr bash:*`, `tkr npx:*`) | arbitrary programs (≈ `Bash(*)`) | none — remove it; allow specific commands |
+| `tkr git …` | Git, including (depending on tkr version, until the #1251 git contract lands) shell-executing forms | `tkr git log:*` → `Bash(git log:*)` |
+| `tkr test …`, `tkr vitest`, `tkr node-test` | test runners and, depending on tkr version, arbitrary programs | `tkr test go test:*` → `Bash(go test:*)`; bare → none |
+| `tkr read`/`cat`/`head`/`tail`/`fread` | reads files (sensitive-path guard pending) | none — use the Read tool |
+| `tkr config`/`trust`/`init`/`setup`/`upgrade`/`sql`/`mcp` | changes tkr security settings | none — run it yourself |
+| `tkr grep`/`ls`/`gh`/…, other non-interpreter verbs | that tool's native authority | `Bash(<tool> …)` |
+
+Rules on tkr's own reporting verbs (`tkr gain:*`, `tkr search *`) and
+exact rules without a wildcard are not flagged. Ask rules are counted
+in the row (they prompt; they do not grant). Doctor **never edits**
+settings — removing a permission is your call — and the row is a WARN,
+so it does not change the exit code.
+
 Doctor from outside a project shows several WARN rows by design — it
 is checking your binary install, not per-project state. Check the
 detail column for the specific fix.
