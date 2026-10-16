@@ -66,7 +66,7 @@ Delete `.tkr/config.toml` if it exists. Defaults are restored automatically on n
 | `dedup_ttl_minutes` | int | 1440 | How long a dedup cache row survives unrefreshed (24h) |
 | `dedup_max_rows` | int | 2000 | Cap on dedup cache rows, pruned oldest-first |
 | `tee_on_failure` | bool | true | Archive raw output when a command fails and the filter was lossy (prints a `tkr expand` recovery hint) |
-| `tee_archive_on_success` | bool | true | Also archive raw output for successful commands when the filter was lossy (silent — no hint printed) |
+| `tee_archive_on_success` | bool | true | Also archive raw output for successful commands when the filter was lossy (prints the same `tkr expand` hint when stored in the artifact store; the file fallback stays silent) |
 
 ## Example config.toml
 
