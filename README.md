@@ -9,6 +9,26 @@ It works on four fronts at once: compresses bloated tool output before Claude re
 
 Built for Claude Code on **Pro, Max, or Team**. API users get the same wins paid in dollars instead of cap headroom (`tkr gain --economics`). Binaries ship every release for macOS, Linux, and Windows; automated release-validation smoke testing currently covers Linux and Windows only (see Requirements). Single static binary, zero runtime dependencies.
 
+> **What's new in v5.36.0** — Output you can trust, and more owner control
+> over supervised work. `tkr read --lines`, `head -n`, `tail -n` and
+> `cat file | head` / `tail` now return the whole window they claim instead
+> of silently stopping at 200 lines; large `grep` and `curl` output keeps its
+> exact shape (counts and file lists survive) with the raw bytes behind an
+> `expand` handle; a filter that truncates noisy output keeps the line that
+> explains the failure; `tkr test go test` keeps the assertion messages under
+> each `--- FAIL`; and a successful command whose output was heavily trimmed
+> now tells you how to get the rest back (`tkr expand CTX:tee:<id>`). Search
+> ranks a natural-language question by content rather than by which heading
+> happens to repeat its words. For TKR Workbench v0.12.0 (ships alongside,
+> needs this tkr or newer), the owner can now accept an item the Chief of
+> Staff holds, withdraw a chat line that was never delivered, and pin the
+> owner signing key from the terminal with `tkr sup-owner accept-item`,
+> `withdraw` and `pin-key`. The Workbench supervision store upgrades itself
+> on first open; an older Workbench will then refuse to open it rather than
+> misread it. The Workbench binaries are unsigned, so Windows SmartScreen may
+> warn on first run. See "Known limitations" in the Workbench release notes.
+> [Full notes →](https://github.com/bpeers01/tkr-releases/releases/latest)
+>
 > **What's new in v5.35.1** — Safer command rewriting. tkr's Claude Code hook
 > now checks the command your shell will actually run, so a backgrounded `&`
 > command, a preceding `cd`, or a leading `NAME=value` assignment can no longer
