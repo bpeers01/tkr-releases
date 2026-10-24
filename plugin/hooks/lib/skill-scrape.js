@@ -996,7 +996,9 @@ function extractVersion(src) {
 // resolve still present — that is correct partial behavior, not an
 // error.
 function scrapeManifest(binaryPath) {
-  const st = fs.statSync(binaryPath);
+  // Float stat timestamps can round up across a millisecond boundary.
+  // Bigint stat truncates before conversion, matching Go's UnixMilli.
+  const st = fs.statSync(binaryPath, { bigint: true });
   const buf = fs.readFileSync(binaryPath);
   // The minified JS structure (braces, quotes, escape sequences) is
   // pure ASCII regardless of what UTF-8 content the string literals
@@ -1028,8 +1030,8 @@ function scrapeManifest(binaryPath) {
     schema: MANIFEST_SCHEMA,
     ccVersion,
     binaryPath,
-    binarySize: st.size,
-    binaryMtimeMs: Math.floor(st.mtimeMs),
+    binarySize: Number(st.size),
+    binaryMtimeMs: Number(st.mtimeMs),
     scrapedAt: new Date().toISOString(),
     complete,
     skills,

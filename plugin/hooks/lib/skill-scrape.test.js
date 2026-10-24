@@ -174,9 +174,9 @@ test("scrapeManifest: enumerates names, resolves userInvocable, hasTree, approxB
     assert.equal(manifest.schema, sb.MANIFEST_SCHEMA);
     assert.equal(manifest.ccVersion, "2.1.227");
     assert.equal(manifest.binaryPath, file);
-    const st = fs.statSync(file);
-    assert.equal(manifest.binarySize, st.size);
-    assert.equal(manifest.binaryMtimeMs, Math.floor(st.mtimeMs));
+    const st = fs.statSync(file, { bigint: true });
+    assert.equal(manifest.binarySize, Number(st.size));
+    assert.equal(manifest.binaryMtimeMs, Number(st.mtimeMs));
     assert.equal(manifest.complete, true);
 
     const byName = Object.fromEntries(manifest.skills.map((s) => [s.name, s]));
@@ -208,6 +208,38 @@ test("scrapeManifest: enumerates names, resolves userInvocable, hasTree, approxB
 
     assert.equal(manifest.skills.length, 8);
   } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------
+// scrapeManifest — timestamp precision at a millisecond boundary
+// ---------------------------------------------------------------------
+
+test("scrapeManifest: preserves integer milliseconds when floating stat rounds up", (t) => {
+  const { dir, file } = writeFixtureBinary(buildFixture());
+  const statSync = fs.statSync;
+  // One nanosecond before a millisecond boundary: converting to a float
+  // first rounds into the next millisecond on current epoch timestamps.
+  const mtimeNs = 1792777184422999999n;
+  const expectedMs = 1792777184422;
+  assert.equal(Math.floor(Number(mtimeNs) / 1e6), expectedMs + 1);
+  t.mock.method(fs, "statSync", (target, options) => {
+    const st = statSync(target, options);
+    if (target !== file) return st;
+    return {
+      ...st,
+      mtimeMs: options?.bigint ? mtimeNs / 1000000n : Number(mtimeNs) / 1e6,
+    };
+  });
+  try {
+    const manifest = scrape.scrapeManifest(file);
+    scrape.writeManifest(manifest, { TKR_STATE_DIR: dir });
+    const saved = JSON.parse(fs.readFileSync(path.join(dir, sb.MANIFEST_FILE), "utf8"));
+    assert.equal(saved.binaryMtimeMs, expectedMs);
+    assert.equal(saved.binarySize, statSync(file).size);
+  } finally {
+    t.mock.restoreAll();
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -254,7 +286,7 @@ test("locateBinary: returns null when the finder command can't resolve claude", 
 // ---------------------------------------------------------------------
 // writeManifest — atomicity + round-trip through skill-bundle's
 // manifestEntryFor, proving the two modules agree on the freshness
-// contract (binarySize === stat size, binaryMtimeMs === floor(stat mtimeMs)).
+// contract (binarySize and binaryMtimeMs are exact integer stat values).
 // ---------------------------------------------------------------------
 
 test("writeManifest: lands atomically at TKR_STATE_DIR/skill-manifest.json and round-trips through manifestEntryFor", () => {
@@ -282,7 +314,7 @@ test("writeManifest: lands atomically at TKR_STATE_DIR/skill-manifest.json and r
     // that actually reads this file in production is not exercised at all.
     // internal/skillbundle's TestJSScraperAndGoReaderAgree runs THIS module's
     // writeManifest through node and asserts the Go reader accepts what it
-    // wrote — schema constant, binarySize and the Math.floor(mtimeMs) vs
+    // wrote — schema constant, binarySize and the integer mtimeMs vs
     // ModTime().UnixMilli() freshness pair included.
   } finally {
     fs.rmSync(stateDirPath, { recursive: true, force: true });
