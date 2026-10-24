@@ -9,6 +9,18 @@ It works on four fronts at once: compresses bloated tool output before Claude re
 
 Built for Claude Code on **Pro, Max, or Team**. API users get the same wins paid in dollars instead of cap headroom (`tkr gain --economics`). Binaries ship every release for macOS, Linux, and Windows; automated release-validation smoke testing currently covers Linux and Windows only (see Requirements). Single static binary, zero runtime dependencies.
 
+> **What's new in v5.37.0** — TKR Code gains multiline prompts, inline status,
+> OpenRouter streaming, model selection, and a plan/edit/diff/verify workflow.
+> Start with `tkr code --write --mode plan --interactive`, then choose
+> `/mode ask` to approve each implementation operation. Optional verification
+> repairs share the original turn budget. Windows directory aliases are checked
+> before project writes. Checkpoints need a compatible current binary. Matching
+> Workbench v0.14.0 adds authenticated native Code telemetry and Resume for verified
+> exited panes; update both products together. Unverified panes retain guided
+> continuation. Nested instruction discovery, source undo and context compaction
+> remain unavailable.
+> [Full notes →](https://github.com/bpeers01/tkr-releases/releases/tag/v5.37.0)
+>
 > **What's new in v5.36.0** — Output you can trust, and more owner control
 > over supervised work. `tkr read --lines`, `head -n`, `tail -n` and
 > `cat file | head` / `tail` now return the whole window they claim instead
@@ -778,23 +790,35 @@ The API key is written to your OS's native protected credential store (Windows C
 
 ### Driven Coding Sessions (`tkr code`)
 
-Hand a coding task to a cheaper model while you stay the approver. You choose
-the scope up front — one of `--read-only` or `--write` is required, there is no
-default — and watch the work happen: assistant messages, each proposed tool
-call, and a running line of tokens and cost per turn.
+Start a coding conversation with scoped tools, human approvals and saved
+checkpoints. Configure a delegation provider/model first, then open a project
+directory. Choose `--read-only` or `--write`, or answer the startup mode prompt.
+Write-enabled home and session-storage roots are refused.
 
 ```bash
-tkr code "fix the flaky test in the parser" --read-only
-tkr code "add a --json flag to the status command" --write
-tkr code "..." --write --spend-ceiling 2.50   # won't start if spend can't be tracked
-tkr code list                                  # review prior sessions
+tkr code --doctor                             # offline readiness, no inference
+tkr code --read-only "explain the parser"
+tkr code --write --mode plan --interactive
+tkr code --write --mode ask --verify 'go test ./...' --repair-attempts 1 --interactive
+tkr code list
+tkr code continue <session-id>
 ```
 
+Use `/compose` for multiline prompts, `/model` for configured models,
+`/context` for context estimates, `/diff` and `/changes` to review edits, and
+`/handoff` for a private evidence snapshot. Plan mode cannot change files or
+run checks; `/mode ask` enables implementation with fresh approvals. OpenRouter
+streams in supported rich terminals; other providers keep final-only display.
+Detach with `/exit`, then restore with `tkr code continue <session-id>` using a
+compatible current binary. Continuation restores the conversation, not files.
+
 Every session is archived, so `tkr code list` can show you what each run did,
-how long it took, and what it cost. `--spend-ceiling` refuses to start against
-a provider that cannot report actual spend, rather than pretending to enforce a
-cap it has no way to measure. Set `TKR_CODE_AUTO_APPROVE=0` if you want to
-approve every single file write by hand.
+how long it took, and provider-reported cost when available. Turn and time
+budgets are not dollar ceilings; missing provider cost remains unknown.
+OpenCode Go write sessions also require existing provider consent and
+`allow_writes = true`. Set `TKR_CODE_AUTO_APPROVE=0` to require fresh approval
+for every tool, including reads, and disable session grants. The original
+filesystem scope remains in force.
 
 ---
 
